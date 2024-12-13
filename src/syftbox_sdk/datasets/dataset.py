@@ -26,7 +26,7 @@ def load_dataset(dataset_name: str) -> Path:
 
     client = Client.load()
 
-    datasets_config_path: Path = client.my_datasite / "datasets" / "datasets.yaml"
+    datasets_config_path: Path = client.my_datasite / "public" / "datasets.yaml"
 
     dataset_config = None
 
