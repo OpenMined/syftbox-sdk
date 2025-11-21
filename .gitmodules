@@ -1,0 +1,6 @@
+[submodule "syftbox-sdk/syft-crypto-core"]
+	path = syftbox-sdk/syft-crypto-core
+	url = https://github.com/OpenMined/syft-crypto-core.git
+[submodule "syft-crypto-core"]
+	path = syft-crypto-core
+	url = https://github.com/OpenMined/syft-crypto-core.git
