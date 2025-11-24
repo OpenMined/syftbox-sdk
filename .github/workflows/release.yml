@@ -5,13 +5,18 @@ on:
     inputs:
       part:
         description: "Version part to bump"
-        required: true
+        required: false
         type: choice
         default: patch
         options:
           - patch
           - minor
           - major
+      skip_bump:
+        description: "Skip version bump (just build/publish current version)"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -21,40 +26,12 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  check-version:
-    name: Check current version/tag
-    runs-on: ubuntu-latest
-    outputs:
-      current_version: ${{ steps.read.outputs.current_version }}
-      tag: ${{ steps.read.outputs.tag }}
-      tag_exists: ${{ steps.read.outputs.tag_exists }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          submodules: recursive
-
-      - name: Read current version and tag status
-        id: read
-        run: |
-          CURRENT_VERSION=$(grep '^version = ' Cargo.toml | head -1 | cut -d'"' -f2)
-          TAG="v${CURRENT_VERSION}"
-          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
-            echo "tag_exists=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag_exists=false" >> "$GITHUB_OUTPUT"
-          fi
-          echo "current_version=${CURRENT_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-
-  bump-version:
+  bump:
     name: Bump version and tag
     runs-on: ubuntu-latest
-    needs: check-version
-    if: needs.check-version.outputs.tag_exists == 'true'
     outputs:
-      version: ${{ steps.output-version.outputs.version }}
-      tag: ${{ steps.output-version.outputs.tag }}
+      version: ${{ steps.out.outputs.version }}
+      tag: ${{ steps.out.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -74,62 +51,41 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Bump version
+      - name: Bump or reuse version
+        id: bump
         env:
           PART: ${{ inputs.part }}
-        run: bump2version "$PART"
+          SKIP_BUMP: ${{ inputs.skip_bump }}
+        run: |
+          if [ "$SKIP_BUMP" = "true" ]; then
+            echo "Skipping bump; using current version"
+          else
+            bump2version "$PART"
+          fi
 
-      - name: Push commit and tags
-        run: git push --follow-tags origin HEAD
+      - name: Push commit and tags (if changed)
+        run: |
+          if git diff --quiet && git diff --cached --quiet; then
+            echo "No changes to push"
+          else
+            git push --follow-tags origin HEAD
+          fi
 
       - name: Output version and tag
-        id: output-version
+        id: out
         run: |
           VERSION=$(grep '^version = ' Cargo.toml | head -1 | cut -d'"' -f2)
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
 
-  tag-version:
-    name: Tag existing version (no bump)
-    runs-on: ubuntu-latest
-    needs: check-version
-    if: needs.check-version.outputs.tag_exists == 'false'
-    outputs:
-      version: ${{ steps.out.outputs.version }}
-      tag: ${{ steps.out.outputs.tag }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          submodules: recursive
-          token: ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}
-
-      - name: Configure git user
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-      - name: Create tag for current version
-        id: out
-        run: |
-          VERSION="${{ needs.check-version.outputs.current_version }}"
-          TAG="${{ needs.check-version.outputs.tag }}"
-          git tag "$TAG"
-          git push origin "$TAG"
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-
   test:
     name: Tests
-    needs: [check-version, bump-version, tag-version]
+    needs: bump
     runs-on: ubuntu-latest
-    if: |
-      needs.check-version.result == 'success' &&
-      (needs.bump-version.result == 'success' || needs.tag-version.result == 'success')
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.bump-version.outputs.tag || needs.tag-version.outputs.tag || needs.check-version.outputs.tag }}
+          ref: ${{ needs.bump.outputs.tag }}
           submodules: recursive
 
       - name: Install protoc
@@ -158,11 +114,8 @@ jobs:
 
   build-wheels:
     name: Build Python wheels
-    needs: [check-version, bump-version, tag-version]
+    needs: bump
     runs-on: ${{ matrix.os }}
-    if: |
-      needs.check-version.result == 'success' &&
-      (needs.bump-version.result == 'success' || needs.tag-version.result == 'success')
     strategy:
       fail-fast: false
       matrix:
@@ -186,7 +139,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.bump-version.outputs.tag || needs.tag-version.outputs.tag || needs.check-version.outputs.tag }}
+          ref: ${{ needs.bump.outputs.tag }}
           submodules: recursive
 
       - name: Install protoc
@@ -229,15 +182,12 @@ jobs:
 
   build-sdist:
     name: Build sdist
-    needs: [check-version, bump-version, tag-version]
+    needs: bump
     runs-on: ubuntu-latest
-    if: |
-      needs.check-version.result == 'success' &&
-      (needs.bump-version.result == 'success' || needs.tag-version.result == 'success')
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.bump-version.outputs.tag || needs.tag-version.outputs.tag || needs.check-version.outputs.tag }}
+          ref: ${{ needs.bump.outputs.tag }}
           submodules: recursive
 
       - name: Install protoc
@@ -260,16 +210,12 @@ jobs:
 
   publish-crate:
     name: Publish crate
-    needs: [check-version, bump-version, tag-version, test]
+    needs: [bump, test]
     runs-on: ubuntu-latest
-    if: |
-      needs.check-version.result == 'success' &&
-      (needs.bump-version.result == 'success' || needs.tag-version.result == 'success') &&
-      needs.test.result == 'success'
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.bump-version.outputs.tag || needs.tag-version.outputs.tag || needs.check-version.outputs.tag }}
+          ref: ${{ needs.bump.outputs.tag }}
           submodules: recursive
 
       - name: Install protoc
@@ -289,16 +235,10 @@ jobs:
 
   publish-pypi:
     name: Publish PyPI
-    needs: [check-version, bump-version, tag-version, build-wheels, build-sdist, test]
+    needs: [bump, build-wheels, build-sdist, test]
     runs-on: ubuntu-latest
     permissions:
       id-token: write
-    if: |
-      needs.check-version.result == 'success' &&
-      (needs.bump-version.result == 'success' || needs.tag-version.result == 'success') &&
-      needs.build-wheels.result == 'success' &&
-      needs.build-sdist.result == 'success' &&
-      needs.test.result == 'success'
     steps:
       - name: Download wheel artifacts
         uses: actions/download-artifact@v4
@@ -321,22 +261,17 @@ jobs:
 
   github-release:
     name: GitHub Release
-    needs: [check-version, bump-version, tag-version, publish-crate, publish-pypi]
+    needs: [bump, publish-crate, publish-pypi]
     runs-on: ubuntu-latest
-    if: |
-      needs.check-version.result == 'success' &&
-      (needs.bump-version.result == 'success' || needs.tag-version.result == 'success') &&
-      needs.publish-crate.result == 'success' &&
-      needs.publish-pypi.result == 'success'
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.bump-version.outputs.tag || needs.tag-version.outputs.tag || needs.check-version.outputs.tag }}
+          ref: ${{ needs.bump.outputs.tag }}
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ needs.bump-version.outputs.tag || needs.tag-version.outputs.tag || needs.check-version.outputs.tag }}
-          name: Release ${{ needs.bump-version.outputs.tag || needs.tag-version.outputs.tag || needs.check-version.outputs.tag }}
+          tag_name: ${{ needs.bump.outputs.tag }}
+          name: Release ${{ needs.bump.outputs.tag }}
           body: |
-            syftbox-sdk ${{ needs.bump-version.outputs.version || needs.tag-version.outputs.version || needs.check-version.outputs.current_version }} published to crates.io and PyPI.
+            syftbox-sdk ${{ needs.bump.outputs.version }} published to crates.io and PyPI.
