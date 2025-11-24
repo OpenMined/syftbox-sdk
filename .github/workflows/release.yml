@@ -133,21 +133,6 @@ jobs:
             target: x86_64-pc-windows-msvc
             manylinux: off
             py-interpreter: "python3.13"
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            manylinux: auto
-          - os: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-            manylinux: auto
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            manylinux: off
-          - os: macos-15-intel
-            target: x86_64-apple-darwin
-            manylinux: off
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            manylinux: off
 
     steps:
       - uses: actions/checkout@v4
@@ -196,7 +181,7 @@ jobs:
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
-          name: wheels-${{ matrix.target }}
+          name: wheels-${{ matrix.target }}-${{ github.run_attempt }}
           path: python/dist/*.whl
 
   build-sdist:
@@ -225,7 +210,7 @@ jobs:
       - name: Upload sdist
         uses: actions/upload-artifact@v4
         with:
-          name: sdist
+          name: sdist-${{ github.run_attempt }}
           path: python/dist/*.tar.gz
 
   publish-crate:
@@ -272,7 +257,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: dist
-          name: sdist
+          name: sdist-${{ github.run_attempt }}
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
