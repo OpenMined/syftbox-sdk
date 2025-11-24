@@ -123,6 +123,9 @@ jobs:
     name: Tests
     needs: [check-version, bump-version, tag-version]
     runs-on: ubuntu-latest
+    if: |
+      needs.check-version.result == 'success' &&
+      (needs.bump-version.result == 'success' || needs.tag-version.result == 'success')
     steps:
       - uses: actions/checkout@v4
         with:
@@ -157,6 +160,9 @@ jobs:
     name: Build Python wheels
     needs: [check-version, bump-version, tag-version]
     runs-on: ${{ matrix.os }}
+    if: |
+      needs.check-version.result == 'success' &&
+      (needs.bump-version.result == 'success' || needs.tag-version.result == 'success')
     strategy:
       fail-fast: false
       matrix:
@@ -225,6 +231,9 @@ jobs:
     name: Build sdist
     needs: [check-version, bump-version, tag-version]
     runs-on: ubuntu-latest
+    if: |
+      needs.check-version.result == 'success' &&
+      (needs.bump-version.result == 'success' || needs.tag-version.result == 'success')
     steps:
       - uses: actions/checkout@v4
         with:
@@ -253,6 +262,10 @@ jobs:
     name: Publish crate
     needs: [check-version, bump-version, tag-version, test]
     runs-on: ubuntu-latest
+    if: |
+      needs.check-version.result == 'success' &&
+      (needs.bump-version.result == 'success' || needs.tag-version.result == 'success') &&
+      needs.test.result == 'success'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -280,6 +293,12 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       id-token: write
+    if: |
+      needs.check-version.result == 'success' &&
+      (needs.bump-version.result == 'success' || needs.tag-version.result == 'success') &&
+      needs.build-wheels.result == 'success' &&
+      needs.build-sdist.result == 'success' &&
+      needs.test.result == 'success'
     steps:
       - name: Download wheel artifacts
         uses: actions/download-artifact@v4
@@ -304,6 +323,11 @@ jobs:
     name: GitHub Release
     needs: [check-version, bump-version, tag-version, publish-crate, publish-pypi]
     runs-on: ubuntu-latest
+    if: |
+      needs.check-version.result == 'success' &&
+      (needs.bump-version.result == 'success' || needs.tag-version.result == 'success') &&
+      needs.publish-crate.result == 'success' &&
+      needs.publish-pypi.result == 'success'
     steps:
       - uses: actions/checkout@v4
         with:
