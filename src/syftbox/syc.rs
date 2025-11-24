@@ -14,9 +14,13 @@ const PUBLIC_DID_RELATIVE: &str = "public/crypto/did.json";
 const SHADOW_DIR_NAME: &str = "unencrypted";
 
 pub fn vault_path_for_home(home: &Path) -> PathBuf {
-    home.parent()
-        .map(|parent| parent.join(VAULT_DIR_NAME))
-        .unwrap_or_else(|| home.join(VAULT_DIR_NAME))
+    if home.file_name().map(|n| n == "datasites").unwrap_or(false) {
+        home.parent()
+            .map(|p| p.join(VAULT_DIR_NAME))
+            .unwrap_or_else(|| home.join(VAULT_DIR_NAME))
+    } else {
+        home.join(VAULT_DIR_NAME)
+    }
 }
 
 pub fn shadow_root_for_data_root(data_root: &Path) -> PathBuf {
