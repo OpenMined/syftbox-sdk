@@ -1,0 +1,33 @@
+[package]
+name = "syftbox-sdk"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Reusable SyftBox client, storage, and RPC helpers"
+repository = "https://github.com/OpenMined/syftbox-sdk"
+
+[features]
+default = ["crypto", "process", "auth"]
+crypto = []
+process = []
+auth = ["reqwest", "tokio"]
+test-plaintext = []
+
+[dependencies]
+anyhow = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+dirs = "5.0"
+walkdir = "2.4"
+thiserror = "1.0"
+tracing = "0.1"
+tokio = { version = "1.40", features = ["macros", "rt"], optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"], optional = true }
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.10", features = ["v4"] }
+
+syft-crypto-protocol = { path = "./syft-crypto-core/protocol" }
+
+[dev-dependencies]
+tempfile = "3.12"
