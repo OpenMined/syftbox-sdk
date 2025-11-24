@@ -653,13 +653,12 @@ impl SyftBoxStorage {
 impl SyctCryptoBackend {
     fn new(root: &Path, vault_override: Option<&Path>) -> Result<Self> {
         let vault_env = env::var_os("SYC_VAULT").map(PathBuf::from);
-        let vault_path = resolve_vault(Some(
-            vault_env
-                .as_deref()
-                .or(vault_override)
-                .map(PathBuf::from)
-                .unwrap_or_else(|| syc::vault_path_for_home(root)),
-        ));
+        let vault_base = vault_env
+            .as_deref()
+            .or(vault_override)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| syc::vault_path_for_home(root));
+        let vault_path = resolve_vault(Some(vault_base));
         ensure_vault_layout(&vault_path)
             .map_err(|err| anyhow!("failed to prepare syc vault: {err}"))?;
 
