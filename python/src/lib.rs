@@ -1,9 +1,14 @@
 use std::path::{Path, PathBuf};
+
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
-use syftbox_sdk::{
-    default_syftbox_config_path, load_runtime_config, syftbox::storage::SyftStorageConfig,
-    SyftBoxApp, SyftBoxStorage, SyftURL as CoreSyftURL, SyftboxRuntimeConfig,
+
+// Avoid name clash with the PyO3 module name by aliasing the Rust crate.
+use ::syftbox_sdk as core;
+use core::{
+    default_syftbox_config_path, load_runtime_config,
+    syftbox::storage::SyftStorageConfig, SyftBoxApp, SyftBoxStorage, SyftURL as CoreSyftURL,
+    SyftboxRuntimeConfig,
 };
 
 fn map_err(err: impl std::fmt::Display) -> PyErr {
