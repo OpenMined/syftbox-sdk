@@ -1,0 +1,27 @@
+[build-system]
+requires = ["maturin>=1.6,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "syftbox-sdk"
+version = "0.1.0"
+description = "Python bindings for the syftbox-sdk Rust library"
+requires-python = ">=3.8"
+authors = [{ name = "OpenMined" }]
+readme = "README.md"
+license = { text = "Apache-2.0" }
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+]
+
+[project.urls]
+Homepage = "https://github.com/OpenMined/syftbox-sdk"
+
+[tool.maturin]
+module-name = "syftbox_sdk"
+features = []

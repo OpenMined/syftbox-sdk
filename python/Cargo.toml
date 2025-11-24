@@ -1,0 +1,17 @@
+[package]
+name = "syftbox-sdk-py"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "syftbox_sdk"
+crate-type = ["cdylib"]
+
+[dependencies]
+anyhow = "1.0"
+pyo3 = { version = "0.21", features = ["extension-module"] }
+syftbox-sdk = { path = ".." }
+
+[package.metadata.maturin]
+name = "syftbox-sdk"

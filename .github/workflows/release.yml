@@ -1,193 +1,264 @@
 name: Release
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - '**/*.rs'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
   workflow_dispatch:
     inputs:
-      bump_type:
-        description: 'Version bump type'
-        required: false
+      part:
+        description: "Version part to bump"
+        required: true
         type: choice
-        default: 'none'
+        default: patch
         options:
-          - none
           - patch
           - minor
           - major
-      force_version:
-        description: 'Force a specific version (e.g., 0.1.1)'
-        required: false
-        type: string
-      skip_tests:
-        description: 'Skip tests (use with caution)'
-        required: false
-        type: boolean
-        default: false
-      bump_only:
-        description: 'Only bump the version and skip build/release steps'
-        required: false
-        type: boolean
-        default: false
 
 permissions:
   contents: write
   packages: write
-  pull-requests: write
-  actions: write
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  test:
-    name: Run tests
-    if: ${{ !inputs.skip_tests && !inputs.bump_only }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      
-      - name: Install protoc
-        uses: arduino/setup-protoc@v2
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: 1.91.0
-      
-      - name: Run tests
-        run: cargo test --all-features
-
   check-version:
-    name: Check if version needs bump
-    needs: [test]
-    if: ${{ always() && (needs.test.result == 'success' || needs.test.result == 'skipped') }}
+    name: Check current version/tag
     runs-on: ubuntu-latest
     outputs:
-      needs_bump: ${{ steps.check.outputs.needs_bump }}
-      current_version: ${{ steps.check.outputs.current_version }}
-      new_version: ${{ steps.check.outputs.new_version }}
+      current_version: ${{ steps.read.outputs.current_version }}
+      tag: ${{ steps.read.outputs.tag }}
+      tag_exists: ${{ steps.read.outputs.tag_exists }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      
-      - name: Check version
-        id: check
-        shell: bash
+          submodules: recursive
+
+      - name: Read current version and tag status
+        id: read
         run: |
-          # Check if force_version is provided
-          if [[ -n "${{ github.event.inputs.force_version }}" ]]; then
-            CURRENT_VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
-            NEW_VERSION="${{ github.event.inputs.force_version }}"
-            echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
-            echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
-            if [[ "$CURRENT_VERSION" != "$NEW_VERSION" ]]; then
-              echo "needs_bump=true" >> $GITHUB_OUTPUT
-              echo "Forcing version from $CURRENT_VERSION to $NEW_VERSION"
-            else
-              echo "needs_bump=false" >> $GITHUB_OUTPUT
-              echo "Version is already $NEW_VERSION"
-            fi
-          # Check if manual bump_type is provided
-          elif [[ "${{ github.event.inputs.bump_type }}" != "" && "${{ github.event.inputs.bump_type }}" != "none" ]]; then
-            CURRENT_VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
-            echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
-            
-            # Calculate new version based on bump type
-            IFS='.' read -ra VERSION_PARTS <<< "$CURRENT_VERSION"
-            MAJOR="${VERSION_PARTS[0]}"
-            MINOR="${VERSION_PARTS[1]}"
-            PATCH="${VERSION_PARTS[2]}"
-            
-            case "${{ github.event.inputs.bump_type }}" in
-              major)
-                NEW_VERSION="$((MAJOR + 1)).0.0"
-                ;;
-              minor)
-                NEW_VERSION="$MAJOR.$((MINOR + 1)).0"
-                ;;
-              patch)
-                NEW_VERSION="$MAJOR.$MINOR.$((PATCH + 1))"
-                ;;
-            esac
-            
-            echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
-            echo "needs_bump=true" >> $GITHUB_OUTPUT
-            echo "Manual bump requested: ${{ github.event.inputs.bump_type }} (from $CURRENT_VERSION to $NEW_VERSION)"
+          CURRENT_VERSION=$(grep '^version = ' Cargo.toml | head -1 | cut -d'"' -f2)
+          TAG="v${CURRENT_VERSION}"
+          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+            echo "tag_exists=true" >> "$GITHUB_OUTPUT"
           else
-            # Get current version from Cargo.toml
-            CURRENT_VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
-            echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
-            
-            # Check if this version has been published already
-            if git tag | grep -q "v$CURRENT_VERSION"; then
-              echo "Version $CURRENT_VERSION already exists, bumping patch version"
-              IFS='.' read -ra VERSION_PARTS <<< "$CURRENT_VERSION"
-              MAJOR="${VERSION_PARTS[0]}"
-              MINOR="${VERSION_PARTS[1]}"
-              PATCH="${VERSION_PARTS[2]}"
-              NEW_PATCH=$((PATCH + 1))
-              NEW_VERSION="$MAJOR.$MINOR.$NEW_PATCH"
-              echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
-              echo "needs_bump=true" >> $GITHUB_OUTPUT
-            else
-              echo "Version $CURRENT_VERSION is new"
-              echo "new_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
-              echo "needs_bump=false" >> $GITHUB_OUTPUT
-            fi
+            echo "tag_exists=false" >> "$GITHUB_OUTPUT"
           fi
+          echo "current_version=${CURRENT_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
 
   bump-version:
-    name: Bump version if needed
+    name: Bump version and tag
     runs-on: ubuntu-latest
     needs: check-version
-    if: needs.check-version.outputs.needs_bump == 'true'
+    if: needs.check-version.outputs.tag_exists == 'true'
     outputs:
-      version: ${{ needs.check-version.outputs.new_version }}
+      version: ${{ steps.output-version.outputs.version }}
+      tag: ${{ steps.output-version.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
         with:
-          token: ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}
           fetch-depth: 0
-      
-      - name: Update version in Cargo.toml
-        shell: bash
+          submodules: recursive
+          token: ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install bump2version
+        run: pip install --upgrade bump2version
+
+      - name: Configure git user
         run: |
-          sed -i 's/^version = .*/version = "${{ needs.check-version.outputs.new_version }}"/' Cargo.toml
-          # Update Cargo.lock
-          cargo update --workspace
-      
-      - name: Commit version bump
-        shell: bash
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Bump version
+        env:
+          PART: ${{ inputs.part }}
+        run: bump2version "$PART"
+
+      - name: Push commit and tags
+        run: git push --follow-tags origin HEAD
+
+      - name: Output version and tag
+        id: output-version
         run: |
-          git config user.name github-actions[bot]
-          git config user.email github-actions[bot]@users.noreply.github.com
-          git add Cargo.toml Cargo.lock
-          git commit -m "chore: bump version to ${{ needs.check-version.outputs.new_version }} [skip ci]"
-          git push
+          VERSION=$(grep '^version = ' Cargo.toml | head -1 | cut -d'"' -f2)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+
+  tag-version:
+    name: Tag existing version (no bump)
+    runs-on: ubuntu-latest
+    needs: check-version
+    if: needs.check-version.outputs.tag_exists == 'false'
+    outputs:
+      version: ${{ steps.out.outputs.version }}
+      tag: ${{ steps.out.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+          token: ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Configure git user
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Create tag for current version
+        id: out
+        run: |
+          VERSION="${{ needs.check-version.outputs.current_version }}"
+          TAG="${{ needs.check-version.outputs.tag }}"
+          git tag "$TAG"
+          git push origin "$TAG"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+  test:
+    name: Tests
+    needs: [check-version, bump-version, tag-version]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.bump-version.outputs.tag || needs.tag-version.outputs.tag || needs.check-version.outputs.tag }}
+          submodules: recursive
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@v2
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.91.0
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run clippy
+        run: cargo clippy --all-targets --all-features --no-deps -- -D warnings
+
+      - name: Run tests
+        run: cargo test --all-features --verbose
+
+  build-wheels:
+    name: Build Python wheels
+    needs: [check-version, bump-version, tag-version]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            manylinux: auto
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            manylinux: auto
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            manylinux: off
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            manylinux: off
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            manylinux: off
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.bump-version.outputs.tag || needs.tag-version.outputs.tag || needs.check-version.outputs.tag }}
+          submodules: recursive
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@v2
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.91.0
+          targets: ${{ matrix.target }}
+
+      - name: Build wheels
+        uses: PyO3/maturin-action@v1
+        with:
+          working-directory: python
+          target: ${{ matrix.target }}
+          args: --release --out dist
+          sccache: "true"
+          manylinux: ${{ matrix.manylinux }}
+          before-script-linux: |
+            PROTOC_VERSION="28.3"
+            ARCH="$(uname -m)"
+            if [ "$ARCH" = "aarch64" ]; then
+              PROTOC_ARCH="aarch_64"
+            else
+              PROTOC_ARCH="$ARCH"
+            fi
+            curl -LO "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-${PROTOC_ARCH}.zip"
+            unzip -q protoc-${PROTOC_VERSION}-linux-${PROTOC_ARCH}.zip -d /usr/local
+            rm protoc-${PROTOC_VERSION}-linux-${PROTOC_ARCH}.zip
+            protoc --version
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.target }}
+          path: python/dist/*.whl
+
+  build-sdist:
+    name: Build sdist
+    needs: [check-version, bump-version, tag-version]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.bump-version.outputs.tag || needs.tag-version.outputs.tag || needs.check-version.outputs.tag }}
+          submodules: recursive
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@v2
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build sdist
+        uses: PyO3/maturin-action@v1
+        with:
+          working-directory: python
+          command: sdist
+          args: --out dist
+
+      - name: Upload sdist
+        uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: python/dist/*.tar.gz
 
   publish-crate:
-    name: Publish to crates.io
+    name: Publish crate
+    needs: [check-version, bump-version, tag-version, test]
     runs-on: ubuntu-latest
-    needs: [check-version, bump-version, test]
-    if: |
-      always() && 
-      !inputs.bump_only &&
-      needs.test.result == 'success' &&
-      (needs.bump-version.result == 'success' || needs.bump-version.result == 'skipped')
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: main
-      
+          ref: ${{ needs.bump-version.outputs.tag || needs.tag-version.outputs.tag || needs.check-version.outputs.tag }}
+          submodules: recursive
+
       - name: Install protoc
         uses: arduino/setup-protoc@v2
         with:
@@ -197,41 +268,51 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.91.0
-      
-      - name: Publish to crates.io
-        run: cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        continue-on-error: true
 
-  create-release:
-    name: Create GitHub Release
+      - name: Publish to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --package syftbox-sdk
+
+  publish-pypi:
+    name: Publish PyPI
+    needs: [check-version, bump-version, tag-version, build-wheels, build-sdist, test]
     runs-on: ubuntu-latest
-    needs: [check-version, bump-version, publish-crate]
-    if: |
-      always() && 
-      !inputs.bump_only &&
-      needs.publish-crate.result == 'success' &&
-      (needs.bump-version.result == 'success' || needs.bump-version.result == 'skipped')
+    permissions:
+      id-token: write
+    steps:
+      - name: Download wheel artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: wheels-*
+          merge-multiple: true
+
+      - name: Download sdist
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          name: sdist
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+          password: ${{ secrets.PYPI_API_TOKEN }}
+
+  github-release:
+    name: GitHub Release
+    needs: [check-version, bump-version, tag-version, publish-crate, publish-pypi]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: main
-      
-      - name: Get final version
-        id: version
-        shell: bash
-        run: |
-          VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-      
-      - name: Create Release
-        id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ref: ${{ needs.bump-version.outputs.tag || needs.tag-version.outputs.tag || needs.check-version.outputs.tag }}
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ steps.version.outputs.version }}
-          release_name: Release v${{ steps.version.outputs.version }}
-          draft: false
-          prerelease: false
+          tag_name: ${{ needs.bump-version.outputs.tag || needs.tag-version.outputs.tag || needs.check-version.outputs.tag }}
+          name: Release ${{ needs.bump-version.outputs.tag || needs.tag-version.outputs.tag || needs.check-version.outputs.tag }}
           body: |
-            syftbox-sdk v${{ steps.version.outputs.version }} has been published to crates.io.
+            syftbox-sdk ${{ needs.bump-version.outputs.version || needs.tag-version.outputs.version || needs.check-version.outputs.current_version }} published to crates.io and PyPI.
