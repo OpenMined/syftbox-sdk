@@ -17,12 +17,14 @@ use walkdir::WalkDir;
 pub struct SyftBoxStorage {
     root: PathBuf,
     backend: StorageBackend,
+    debug: bool,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct SyftStorageConfig {
     pub vault_path: Option<PathBuf>,
     pub disable_crypto: bool,
+    pub debug: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -82,14 +84,17 @@ impl SyftBoxStorage {
         };
 
         let uses_crypto = matches!(backend, StorageBackend::SyctCrypto(_));
-        eprintln!(
-            "SyftBoxStorage initialized: root={:?}, crypto={}",
-            encrypted_root, uses_crypto
-        );
+        if config.debug {
+            eprintln!(
+                "SyftBoxStorage initialized: root={:?}, crypto={}",
+                encrypted_root, uses_crypto
+            );
+        }
 
         Self {
             root: encrypted_root,
             backend,
+            debug: config.debug,
         }
     }
 
@@ -210,11 +215,13 @@ impl SyftBoxStorage {
                 let relative = self.relative_from_root(datasite_path)?;
                 use syft_crypto_protocol::datasite::context::resolve_shadow_path;
                 let shadow_path = resolve_shadow_path(&backend.context, &relative);
-                eprintln!("DEBUG read_with_shadow:");
-                eprintln!("  datasite: {:?}", datasite_path);
-                eprintln!("  relative: {:?}", relative);
-                eprintln!("  shadow: {:?}", shadow_path);
-                eprintln!("  shadow_root: {:?}", backend.context.shadow_root);
+                if self.debug {
+                    eprintln!("DEBUG read_with_shadow:");
+                    eprintln!("  datasite: {:?}", datasite_path);
+                    eprintln!("  relative: {:?}", relative);
+                    eprintln!("  shadow: {:?}", shadow_path);
+                    eprintln!("  shadow_root: {:?}", backend.context.shadow_root);
+                }
 
                 // If shadow copy exists and is newer, use it
                 if shadow_path.exists() && datasite_path.exists() {
@@ -260,15 +267,26 @@ impl SyftBoxStorage {
                 // Cache ONLY successfully decrypted plaintext
                 if let Some(parent) = shadow_path.parent() {
                     match fs::create_dir_all(parent) {
-                        Ok(_) => eprintln!("  ✓ Created shadow parent: {:?}", parent),
+                        Ok(_) => {
+                            if self.debug {
+                                eprintln!("  ✓ Created shadow parent: {:?}", parent);
+                            }
+                        }
                         Err(e) => {
-                            eprintln!("  ✗ Failed to create shadow parent: {:?}: {}", parent, e)
+                            if self.debug {
+                                eprintln!(
+                                    "  ✗ Failed to create shadow parent: {:?}: {}",
+                                    parent, e
+                                );
+                            }
                         }
                     }
                 }
                 match fs::write(&shadow_path, &plaintext) {
                     Ok(_) => {
-                        eprintln!("✓ Cached PLAINTEXT to shadow: {:?}", shadow_path);
+                        if self.debug {
+                            eprintln!("✓ Cached PLAINTEXT to shadow: {:?}", shadow_path);
+                        }
                         // Sanity check: ensure we didn't cache encrypted data
                         if plaintext.len() >= 4 && &plaintext[0..4] == b"SYC1" {
                             panic!(
@@ -277,7 +295,11 @@ impl SyftBoxStorage {
                             );
                         }
                     }
-                    Err(e) => eprintln!("✗ Failed to cache shadow: {:?}: {}", shadow_path, e),
+                    Err(e) => {
+                        if self.debug {
+                            eprintln!("✗ Failed to cache shadow: {:?}: {}", shadow_path, e);
+                        }
+                    }
                 }
 
                 Ok(plaintext)
@@ -335,20 +357,24 @@ impl SyftBoxStorage {
                 if let Ok(relative) = absolute_path.strip_prefix(&self.root) {
                     let shadow_path = backend.context.shadow_root.join(relative);
 
-                    eprintln!("DEBUG write_with_shadow:");
-                    eprintln!("  datasite: {:?}", absolute_path);
-                    eprintln!("  relative: {:?}", relative);
-                    eprintln!("  shadow: {:?}", shadow_path);
-                    eprintln!("  shadow_root: {:?}", backend.context.shadow_root);
+                    if self.debug {
+                        eprintln!("DEBUG write_with_shadow:");
+                        eprintln!("  datasite: {:?}", absolute_path);
+                        eprintln!("  relative: {:?}", relative);
+                        eprintln!("  shadow: {:?}", shadow_path);
+                        eprintln!("  shadow_root: {:?}", backend.context.shadow_root);
+                    }
 
                     // Create parent directory for shadow
                     if let Some(shadow_parent) = shadow_path.parent() {
                         if let Err(e) = fs::create_dir_all(shadow_parent) {
-                            eprintln!(
-                                "✗ Failed to create shadow parent: {:?}: {}",
-                                shadow_parent, e
-                            );
-                        } else {
+                            if self.debug {
+                                eprintln!(
+                                    "✗ Failed to create shadow parent: {:?}: {}",
+                                    shadow_parent, e
+                                );
+                            }
+                        } else if self.debug {
                             eprintln!("  ✓ Created shadow parent: {:?}", shadow_parent);
                         }
                     }
@@ -356,14 +382,24 @@ impl SyftBoxStorage {
                     // Write plaintext to shadow
                     match fs::write(&shadow_path, plaintext) {
                         Ok(_) => {
-                            eprintln!("✓ Cached PLAINTEXT to shadow (write): {:?}", shadow_path);
+                            if self.debug {
+                                eprintln!(
+                                    "✓ Cached PLAINTEXT to shadow (write): {:?}",
+                                    shadow_path
+                                );
+                            }
                             // Sanity check: ensure we didn't cache encrypted data
                             if plaintext.len() >= 4 && &plaintext[0..4] == b"SYC1" {
                                 panic!("BUG: Tried to cache encrypted data to shadow folder during write! Path: {:?}", shadow_path);
                             }
                         }
                         Err(e) => {
-                            eprintln!("✗ Failed to cache shadow (write): {:?}: {}", shadow_path, e)
+                            if self.debug {
+                                eprintln!(
+                                    "✗ Failed to cache shadow (write): {:?}: {}",
+                                    shadow_path, e
+                                );
+                            }
                         }
                     }
                 }
@@ -426,12 +462,16 @@ impl SyftBoxStorage {
                         fs::remove_dir_all(&shadow_path).with_context(|| {
                             format!("failed to remove shadow directory {:?}", shadow_path)
                         })?;
-                        eprintln!("✓ Removed shadow directory: {:?}", shadow_path);
+                        if self.debug {
+                            eprintln!("✓ Removed shadow directory: {:?}", shadow_path);
+                        }
                     } else {
                         fs::remove_file(&shadow_path).with_context(|| {
                             format!("failed to remove shadow file {:?}", shadow_path)
                         })?;
-                        eprintln!("✓ Removed shadow file: {:?}", shadow_path);
+                        if self.debug {
+                            eprintln!("✓ Removed shadow file: {:?}", shadow_path);
+                        }
                     }
                 }
             }

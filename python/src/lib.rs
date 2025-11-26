@@ -2,12 +2,15 @@ use std::path::{Path, PathBuf};
 
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
+use pyo3::types::{PyBytes, PyModule};
 
 // Avoid name clash with the PyO3 module name by aliasing the Rust crate.
 use ::syftbox_sdk as core;
 use core::{
     default_syftbox_config_path, load_runtime_config,
-    syftbox::storage::SyftStorageConfig, SyftBoxApp, SyftBoxStorage, SyftURL as CoreSyftURL,
+    syftbox::storage::{SyftStorageConfig, WritePolicy},
+    syftbox::syc::{provision_local_identity, import_public_bundle, IdentityProvisioningOutcome},
+    SyftBoxApp, SyftBoxStorage, SyftURL as CoreSyftURL,
     SyftboxRuntimeConfig,
 };
 
@@ -187,11 +190,12 @@ struct PySyftBoxStorage {
 #[pymethods]
 impl PySyftBoxStorage {
     #[new]
-    #[pyo3(signature = (root, vault_path=None, disable_crypto=false))]
-    fn new(root: String, vault_path: Option<String>, disable_crypto: bool) -> PyResult<Self> {
+    #[pyo3(signature = (root, vault_path=None, disable_crypto=false, debug=false))]
+    fn new(root: String, vault_path: Option<String>, disable_crypto: bool, debug: bool) -> PyResult<Self> {
         let config = SyftStorageConfig {
             vault_path: vault_path.map(PathBuf::from),
             disable_crypto,
+            debug,
         };
         Ok(Self {
             inner: SyftBoxStorage::with_config(Path::new(&root), &config),
@@ -237,6 +241,80 @@ impl PySyftBoxStorage {
             })
             .map_err(map_err)
     }
+
+    /// Write bytes to a file (plaintext mode)
+    fn write_bytes(&self, absolute_path: String, data: &[u8], overwrite: bool) -> PyResult<()> {
+        self.inner
+            .write_plaintext_file(Path::new(&absolute_path), data, overwrite)
+            .map_err(map_err)
+    }
+
+    /// Read bytes from a file (plaintext mode)
+    fn read_bytes<'py>(&self, py: Python<'py>, absolute_path: String) -> PyResult<Bound<'py, PyBytes>> {
+        let bytes = self.inner
+            .read_plaintext_file(Path::new(&absolute_path))
+            .map_err(map_err)?;
+        Ok(PyBytes::new_bound(py, &bytes))
+    }
+
+    /// Write encrypted file using shadow folder pattern.
+    /// Writes plaintext to shadow folder, encrypted to datasites.
+    #[pyo3(signature = (datasite_path, data, recipients, hint=None, overwrite=true))]
+    fn write_encrypted_with_shadow(
+        &self,
+        datasite_path: String,
+        data: &[u8],
+        recipients: Vec<String>,
+        hint: Option<String>,
+        overwrite: bool,
+    ) -> PyResult<()> {
+        self.inner
+            .write_encrypted_with_shadow(
+                Path::new(&datasite_path),
+                data,
+                recipients,
+                hint,
+                overwrite,
+            )
+            .map_err(map_err)
+    }
+
+    /// Read encrypted file using shadow folder pattern.
+    /// Decrypts from datasites to shadow, returns plaintext.
+    fn read_with_shadow<'py>(&self, py: Python<'py>, datasite_path: String) -> PyResult<Bound<'py, PyBytes>> {
+        let bytes = self.inner
+            .read_with_shadow(Path::new(&datasite_path))
+            .map_err(map_err)?;
+        Ok(PyBytes::new_bound(py, &bytes))
+    }
+
+    /// Write with shadow folder pattern - creates both encrypted file and plaintext shadow.
+    /// Policy can be "plaintext" or provide recipients list for encryption.
+    #[pyo3(signature = (absolute_path, data, recipients=None, hint=None, overwrite=true))]
+    fn write_with_shadow(
+        &self,
+        absolute_path: String,
+        data: &[u8],
+        recipients: Option<Vec<String>>,
+        hint: Option<String>,
+        overwrite: bool,
+    ) -> PyResult<()> {
+        let policy = match recipients {
+            Some(r) if !r.is_empty() => WritePolicy::Envelope { recipients: r, hint },
+            _ => WritePolicy::Plaintext,
+        };
+        self.inner
+            .write_with_shadow(Path::new(&absolute_path), data, policy, overwrite)
+            .map_err(map_err)?;
+        Ok(())
+    }
+
+    /// Ensure a directory exists
+    fn ensure_dir(&self, dir: String) -> PyResult<()> {
+        self.inner
+            .ensure_dir(Path::new(&dir))
+            .map_err(map_err)
+    }
 }
 
 #[pyfunction]
@@ -267,17 +345,97 @@ fn parse_syft_url(url: &str) -> PyResult<SyftURL> {
     SyftURL::parse(url)
 }
 
+/// Result of provisioning a local identity
+#[pyclass(name = "IdentityProvisioningResult", module = "syftbox_sdk")]
+struct PyIdentityProvisioningResult {
+    inner: IdentityProvisioningOutcome,
+}
+
+#[pymethods]
+impl PyIdentityProvisioningResult {
+    #[getter]
+    fn identity(&self) -> String {
+        self.inner.identity.clone()
+    }
+
+    #[getter]
+    fn generated(&self) -> bool {
+        self.inner.generated
+    }
+
+    #[getter]
+    fn recovery_mnemonic(&self) -> Option<String> {
+        self.inner.recovery_mnemonic.clone()
+    }
+
+    #[getter]
+    fn vault_path(&self) -> String {
+        self.inner.vault_path.to_string_lossy().into_owned()
+    }
+
+    #[getter]
+    fn bundle_path(&self) -> String {
+        self.inner.bundle_path.to_string_lossy().into_owned()
+    }
+
+    #[getter]
+    fn public_bundle_path(&self) -> String {
+        self.inner.public_bundle_path.to_string_lossy().into_owned()
+    }
+}
+
+/// Provision a local identity (generate keypair if needed)
+#[pyfunction]
+#[pyo3(signature = (identity, data_root, vault_override=None))]
+fn provision_identity(
+    identity: &str,
+    data_root: &str,
+    vault_override: Option<&str>,
+) -> PyResult<PyIdentityProvisioningResult> {
+    let result = provision_local_identity(
+        identity,
+        Path::new(data_root),
+        vault_override.map(Path::new),
+    )
+    .map_err(map_err)?;
+    Ok(PyIdentityProvisioningResult { inner: result })
+}
+
+/// Import a peer's public bundle into the vault
+#[pyfunction]
+#[pyo3(signature = (bundle_path, vault_path, expected_identity=None, export_root=None, refresh_identity=None))]
+fn import_bundle(
+    bundle_path: &str,
+    vault_path: &str,
+    expected_identity: Option<&str>,
+    export_root: Option<&str>,
+    refresh_identity: Option<&str>,
+) -> PyResult<String> {
+    let info = import_public_bundle(
+        Path::new(bundle_path),
+        expected_identity,
+        Path::new(vault_path),
+        export_root.map(Path::new),
+        refresh_identity,
+    )
+    .map_err(map_err)?;
+    Ok(info.identity)
+}
+
 #[pymodule]
-fn syftbox_sdk(py: Python, m: &PyModule) -> PyResult<()> {
+fn syftbox_sdk(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<SyftURL>()?;
     m.add_class::<PySyftRuntimeConfig>()?;
     m.add_class::<PySyftBoxApp>()?;
     m.add_class::<PySyftBoxStorage>()?;
+    m.add_class::<PyIdentityProvisioningResult>()?;
 
     m.add_function(wrap_pyfunction!(build_syft_url, m)?)?;
     m.add_function(wrap_pyfunction!(parse_syft_url, m)?)?;
     m.add_function(wrap_pyfunction!(default_config_path, m)?)?;
     m.add_function(wrap_pyfunction!(load_runtime, m)?)?;
+    m.add_function(wrap_pyfunction!(provision_identity, m)?)?;
+    m.add_function(wrap_pyfunction!(import_bundle, m)?)?;
 
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     m.add(
@@ -285,7 +443,5 @@ fn syftbox_sdk(py: Python, m: &PyModule) -> PyResult<()> {
         "Python bindings for the syftbox-sdk Rust library using PyO3.",
     )?;
 
-    // Silence unused variable lint in case PyO3 adds new requirements.
-    let _ = py;
     Ok(())
 }
