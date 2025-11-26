@@ -274,7 +274,10 @@ impl SyftBoxStorage {
                         }
                         Err(e) => {
                             if self.debug {
-                                eprintln!("  ✗ Failed to create shadow parent: {:?}: {}", parent, e);
+                                eprintln!(
+                                    "  ✗ Failed to create shadow parent: {:?}: {}",
+                                    parent, e
+                                );
                             }
                         }
                     }
@@ -380,7 +383,10 @@ impl SyftBoxStorage {
                     match fs::write(&shadow_path, plaintext) {
                         Ok(_) => {
                             if self.debug {
-                                eprintln!("✓ Cached PLAINTEXT to shadow (write): {:?}", shadow_path);
+                                eprintln!(
+                                    "✓ Cached PLAINTEXT to shadow (write): {:?}",
+                                    shadow_path
+                                );
                             }
                             // Sanity check: ensure we didn't cache encrypted data
                             if plaintext.len() >= 4 && &plaintext[0..4] == b"SYC1" {
@@ -389,7 +395,10 @@ impl SyftBoxStorage {
                         }
                         Err(e) => {
                             if self.debug {
-                                eprintln!("✗ Failed to cache shadow (write): {:?}: {}", shadow_path, e);
+                                eprintln!(
+                                    "✗ Failed to cache shadow (write): {:?}: {}",
+                                    shadow_path, e
+                                );
                             }
                         }
                     }
