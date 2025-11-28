@@ -179,6 +179,21 @@ impl PySyftBoxApp {
     fn build_syft_url(&self, endpoint_name: &str) -> String {
         self.inner.build_syft_url(endpoint_name)
     }
+
+    /// Ensure a peer can read (and optionally write) under the owner's datasite path.
+    #[pyo3(signature = (relative_path, peer_email, allow_write=false))]
+    fn ensure_peer_can_read(
+        &self,
+        relative_path: String,
+        peer_email: String,
+        allow_write: bool,
+    ) -> PyResult<String> {
+        let path = self
+            .inner
+            .ensure_peer_can_read(relative_path, &peer_email, allow_write)
+            .map_err(map_err)?;
+        Ok(path.to_string_lossy().into_owned())
+    }
 }
 
 #[pyclass(name = "SyftBoxStorage", module = "syftbox_sdk", unsendable)]

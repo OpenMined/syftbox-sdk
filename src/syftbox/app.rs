@@ -1,24 +1,26 @@
 use crate::syftbox::storage::SyftBoxStorage;
 use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
+use serde_yaml;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 const PERMISSION_FILE_NAME: &str = "syft.pub.yaml";
 pub const DEFAULT_RPC_PERMISSION_CONTENT: &str = r#"rules:
-  - pattern: '**/*.request'
+  - pattern: "**/*.request"
     access:
       admin: []
       read:
-        - '*'
+        - "*"
       write:
-        - '*'
-  - pattern: '**/*.response'
+        - "*"
+  - pattern: "**/*.response"
     access:
       admin: []
       read:
-        - '*'
+        - "*"
       write:
-        - '*'
+        - "*"
 "#;
 
 pub const DEFAULT_APP_PERMISSION_CONTENT: &str = r#"rules:
@@ -39,6 +41,35 @@ pub struct SyftBoxApp {
     pub app_data_dir: PathBuf,
     pub rpc_dir: PathBuf,
     pub storage: SyftBoxStorage,
+}
+
+pub struct SessionPaths {
+    pub owner_path: PathBuf,
+    pub peer_path: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct Access {
+    #[serde(default)]
+    admin: Vec<String>,
+    #[serde(default)]
+    read: Vec<String>,
+    #[serde(default)]
+    write: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct Rule {
+    pattern: String,
+    access: Access,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct RuleSet {
+    #[serde(default)]
+    rules: Vec<Rule>,
+    #[serde(default)]
+    terminal: bool,
 }
 
 impl SyftBoxApp {
@@ -166,6 +197,98 @@ impl SyftBoxApp {
             "syft://{}/app_data/{}/rpc/{}",
             self.email, self.app_name, clean_endpoint
         )
+    }
+
+    fn merge_rule_access(rule: &mut Rule, owner: &str, peer: &str, allow_write: bool) {
+        let add_unique = |vec: &mut Vec<String>, val: &str| {
+            if !vec.iter().any(|v| v == val) {
+                vec.push(val.to_string());
+            }
+        };
+        add_unique(&mut rule.access.admin, owner);
+        add_unique(&mut rule.access.read, owner);
+        add_unique(&mut rule.access.read, peer);
+        if allow_write {
+            add_unique(&mut rule.access.write, owner);
+            add_unique(&mut rule.access.write, peer);
+        }
+    }
+
+    fn ensure_acl(
+        &self,
+        target_dir: &Path,
+        owner: &str,
+        peer: &str,
+        allow_write: bool,
+    ) -> Result<()> {
+        let perm_path = target_dir.join(PERMISSION_FILE_NAME);
+
+        let mut ruleset = if perm_path.exists() {
+            let content = fs::read_to_string(&perm_path)
+                .with_context(|| format!("Failed to read ACL file {:?}", perm_path))?;
+            serde_yaml::from_str::<RuleSet>(&content).unwrap_or_default()
+        } else {
+            RuleSet::default()
+        };
+
+        if ruleset.rules.is_empty() {
+            ruleset.rules.push(Rule {
+                pattern: "**".to_string(),
+                access: Access::default(),
+            });
+        }
+
+        // Use or create catch-all rule
+        let mut has_catch_all = false;
+        for rule in ruleset.rules.iter_mut() {
+            if rule.pattern == "**" {
+                has_catch_all = true;
+                Self::merge_rule_access(rule, owner, peer, allow_write);
+            }
+        }
+        if !has_catch_all {
+            let mut rule = Rule {
+                pattern: "**".to_string(),
+                access: Access::default(),
+            };
+            Self::merge_rule_access(&mut rule, owner, peer, allow_write);
+            ruleset.rules.push(rule);
+        }
+
+        let serialized =
+            serde_yaml::to_string(&ruleset).context("Failed to serialize ACL ruleset")?;
+        self.storage
+            .write_plaintext_file(&perm_path, serialized.as_bytes(), true)?;
+
+        Ok(())
+    }
+
+    /// Ensure a peer can read (and optionally write) under a relative path in the owner's datasite.
+    ///
+    /// Creates the directory if missing and updates/merges syft.pub.yaml to include owner+peer.
+    pub fn ensure_peer_can_read<P: AsRef<Path>>(
+        &self,
+        relative_path: P,
+        peer_email: &str,
+        allow_write: bool,
+    ) -> Result<PathBuf> {
+        let relative_path = relative_path.as_ref();
+        let target_dir = self
+            .data_dir
+            .join("datasites")
+            .join(&self.email)
+            .join(relative_path);
+
+        fs::create_dir_all(&target_dir).with_context(|| {
+            format!(
+                "Failed to create target directory for ACL: {:?}",
+                target_dir
+            )
+        })?;
+
+        self.ensure_acl(&target_dir, &self.email, peer_email, allow_write)?;
+
+        Ok(target_dir)
     }
 }
 
