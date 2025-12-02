@@ -44,12 +44,9 @@ pub fn resolve_encrypted_root(data_root: &Path) -> PathBuf {
     {
         data_root.to_path_buf()
     } else {
-        let candidate = data_root.join("datasites");
-        if candidate.exists() {
-            candidate
-        } else {
-            data_root.to_path_buf()
-        }
+        // Always prefer the datasites subdir for encrypted content; callers
+        // will create the directory if it does not already exist.
+        data_root.join("datasites")
     }
 }
 
@@ -207,7 +204,10 @@ fn write_datasite_config(
 }
 
 fn export_public_bundle(identity: &str, bundle: &Value, data_root: &Path) -> Result<PathBuf> {
-    let public_dir = data_root.join(identity).join(PUBLIC_DID_RELATIVE);
+    // Ensure bundles live under the datasites root even if the caller passes a
+    // top-level data dir without an existing datasites folder yet.
+    let base = resolve_encrypted_root(data_root);
+    let public_dir = base.join(identity).join(PUBLIC_DID_RELATIVE);
     if let Some(parent) = public_dir.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create directory: {}", parent.display()))?;
