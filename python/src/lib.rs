@@ -126,7 +126,7 @@ impl PySyftRuntimeConfig {
     }
 }
 
-#[pyclass(name = "SyftBoxApp", module = "syftbox_sdk", unsendable)]
+#[pyclass(name = "SyftBoxApp", module = "syftbox_sdk")]
 #[derive(Clone)]
 struct PySyftBoxApp {
     inner: SyftBoxApp,
@@ -196,7 +196,7 @@ impl PySyftBoxApp {
     }
 }
 
-#[pyclass(name = "SyftBoxStorage", module = "syftbox_sdk", unsendable)]
+#[pyclass(name = "SyftBoxStorage", module = "syftbox_sdk")]
 #[derive(Clone)]
 struct PySyftBoxStorage {
     inner: SyftBoxStorage,
