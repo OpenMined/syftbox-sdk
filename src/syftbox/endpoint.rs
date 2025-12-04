@@ -4,6 +4,11 @@ use crate::syftbox::types::{RpcRequest, RpcResponse};
 use anyhow::{anyhow, bail, Context, Result};
 use std::path::{Path, PathBuf};
 
+/// Request with its file path
+pub type RequestWithPath = (PathBuf, RpcRequest);
+/// Failed request: (path, error message, raw bytes for envelope parsing)
+pub type FailedRequest = (PathBuf, String, Vec<u8>);
+
 /// Represents an RPC endpoint
 pub struct Endpoint {
     pub name: String,
@@ -29,6 +34,39 @@ impl Endpoint {
     pub fn check_requests(&self) -> Result<Vec<(PathBuf, RpcRequest)>> {
         // Only check your own endpoint folder - this is where others write requests TO you
         self.check_requests_in_folder(&self.path)
+    }
+
+    /// Check for request files and return both successes and failures
+    /// Returns (successful_requests, failed_requests)
+    pub fn check_requests_with_failures(
+        &self,
+    ) -> Result<(Vec<RequestWithPath>, Vec<FailedRequest>)> {
+        let mut successes = Vec::new();
+        let mut failures = Vec::new();
+
+        if !self.path.exists() {
+            return Ok((successes, failures));
+        }
+
+        for entry in std::fs::read_dir(&self.path)? {
+            let entry = entry?;
+            let path = entry.path();
+
+            if path.extension().and_then(|s| s.to_str()) == Some("request") {
+                match self.read_request(&path) {
+                    Ok(request) => {
+                        successes.push((path, request));
+                    }
+                    Err(e) => {
+                        // Read raw bytes so caller can attempt envelope parsing
+                        let raw_bytes = std::fs::read(&path).unwrap_or_default();
+                        failures.push((path, e.to_string(), raw_bytes));
+                    }
+                }
+            }
+        }
+
+        Ok((successes, failures))
     }
 
     /// Helper to check for requests in a specific folder
