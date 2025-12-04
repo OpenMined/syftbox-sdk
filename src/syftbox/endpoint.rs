@@ -4,10 +4,9 @@ use crate::syftbox::types::{RpcRequest, RpcResponse};
 use anyhow::{anyhow, bail, Context, Result};
 use std::path::{Path, PathBuf};
 
-/// A successfully parsed request with its file path
-pub type ParsedRequest = (PathBuf, RpcRequest);
-
-/// A failed request parse: (path, error_message, raw_bytes)
+/// Request with its file path
+pub type RequestWithPath = (PathBuf, RpcRequest);
+/// Failed request: (path, error message, raw bytes for envelope parsing)
 pub type FailedRequest = (PathBuf, String, Vec<u8>);
 
 /// Represents an RPC endpoint
@@ -38,9 +37,10 @@ impl Endpoint {
     }
 
     /// Check for request files and return both successes and failures
-    /// Returns (successful_requests, failed_requests) where failed_requests contains
-    /// (path, error_message, raw_bytes for envelope parsing)
-    pub fn check_requests_with_failures(&self) -> Result<(Vec<ParsedRequest>, Vec<FailedRequest>)> {
+    /// Returns (successful_requests, failed_requests)
+    pub fn check_requests_with_failures(
+        &self,
+    ) -> Result<(Vec<RequestWithPath>, Vec<FailedRequest>)> {
         let mut successes = Vec::new();
         let mut failures = Vec::new();
 
