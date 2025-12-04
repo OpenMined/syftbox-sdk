@@ -74,6 +74,16 @@ pub fn provision_local_identity(
     data_root: &Path,
     vault_override: Option<&Path>,
 ) -> Result<IdentityProvisioningOutcome> {
+    provision_local_identity_with_options(identity, data_root, vault_override, false)
+}
+
+/// Provision local identity with option to overwrite existing keys.
+pub fn provision_local_identity_with_options(
+    identity: &str,
+    data_root: &Path,
+    vault_override: Option<&Path>,
+    overwrite: bool,
+) -> Result<IdentityProvisioningOutcome> {
     let data_root = data_root
         .canonicalize()
         .unwrap_or_else(|_| data_root.to_path_buf());
@@ -96,7 +106,19 @@ pub fn provision_local_identity(
 
     write_datasite_config(&vault_path, &encrypted_root, &shadow_root)?;
 
-    let outcome = write_identity_material_if_missing(identity, &vault_path, &encrypted_root)?;
+    let outcome = if overwrite {
+        let generated_identity = generate_identity_material(identity)?;
+        write_identity_material(
+            identity,
+            generated_identity,
+            &vault_path,
+            &encrypted_root,
+            true,
+            true,
+        )?
+    } else {
+        write_identity_material_if_missing(identity, &vault_path, &encrypted_root)?
+    };
     Ok(outcome)
 }
 
