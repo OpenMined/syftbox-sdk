@@ -5,7 +5,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use syft_crypto_protocol::datasite::context::{ensure_vault_layout, sanitize_identity};
 use syft_crypto_protocol::datasite::crypto::{parse_public_bundle, PublicBundleInfo};
-use syft_crypto_protocol::identity::generate_identity_material;
+use syft_crypto_protocol::identity::{
+    generate_identity_material, identity_material_from_recovery_key,
+};
+use syft_crypto_protocol::SyftRecoveryKey;
 
 const VAULT_DIR_NAME: &str = ".syc";
 const CONFIG_DIR: &str = "config";
@@ -83,9 +86,7 @@ pub fn provision_local_identity(
         )
     })?;
 
-    let vault_path = vault_override
-        .map(PathBuf::from)
-        .unwrap_or_else(|| vault_path_for_home(&encrypted_root));
+    let vault_path = resolve_vault_path(vault_override);
     ensure_vault_layout(&vault_path).map_err(|err| {
         anyhow!(
             "failed to prepare Syft Crypto vault at {}: {err}",
@@ -95,46 +96,133 @@ pub fn provision_local_identity(
 
     write_datasite_config(&vault_path, &encrypted_root, &shadow_root)?;
 
+    let outcome = write_identity_material_if_missing(identity, &vault_path, &encrypted_root)?;
+    Ok(outcome)
+}
+
+/// Restore identity from a BIP-39 mnemonic into the given data root/vault.
+pub fn restore_identity_from_mnemonic(
+    identity: &str,
+    mnemonic: &str,
+    data_root: &Path,
+    vault_override: Option<&Path>,
+) -> Result<IdentityProvisioningOutcome> {
+    let data_root = data_root
+        .canonicalize()
+        .unwrap_or_else(|_| data_root.to_path_buf());
+    let encrypted_root = resolve_encrypted_root(&data_root);
+    let shadow_root = shadow_root_for_data_root(&encrypted_root);
+    fs::create_dir_all(&shadow_root).with_context(|| {
+        format!(
+            "failed to create shadow directory: {}",
+            shadow_root.display()
+        )
+    })?;
+
+    let vault_path = resolve_vault_path(vault_override);
+    ensure_vault_layout(&vault_path).map_err(|err| {
+        anyhow!(
+            "failed to prepare Syft Crypto vault at {}: {err}",
+            vault_path.display()
+        )
+    })?;
+
+    write_datasite_config(&vault_path, &encrypted_root, &shadow_root)?;
+
+    let recovery_key =
+        SyftRecoveryKey::from_mnemonic(mnemonic).context("failed to parse recovery mnemonic")?;
+    let material = identity_material_from_recovery_key(identity.trim(), &recovery_key)?;
+    write_identity_material(
+        identity,
+        material,
+        &vault_path,
+        &encrypted_root,
+        true,
+        false,
+    )
+}
+
+fn write_identity_material_if_missing(
+    identity: &str,
+    vault_path: &Path,
+    encrypted_root: &Path,
+) -> Result<IdentityProvisioningOutcome> {
     let identity = identity.trim();
     let slug = sanitize_identity(identity);
     let key_path = vault_path.join("keys").join(format!("{slug}.key"));
     let bundle_path = vault_path.join("bundles").join(format!("{slug}.json"));
 
-    let mut generated = false;
-    let mut recovery_mnemonic = None;
-    let mut public_bundle_value = None;
-
     if !key_path.exists() || !bundle_path.exists() {
         let generated_identity = generate_identity_material(identity)?;
-        fs::write(&key_path, &generated_identity.key_file)
-            .with_context(|| format!("failed to write private key file: {}", key_path.display()))?;
-        fs::write(
-            &bundle_path,
-            serde_json::to_vec_pretty(&generated_identity.public_bundle)?,
-        )
-        .with_context(|| format!("failed to write bundle file: {}", bundle_path.display()))?;
-        generated = true;
-        recovery_mnemonic = Some(generated_identity.recovery_key_mnemonic.clone());
-        public_bundle_value = Some(generated_identity.public_bundle);
+        let outcome = write_identity_material(
+            identity,
+            generated_identity,
+            vault_path,
+            encrypted_root,
+            false,
+            true,
+        )?;
+        return Ok(outcome);
     }
 
-    let public_bundle = match public_bundle_value {
-        Some(bundle) => bundle,
-        None => {
-            let contents = fs::read_to_string(&bundle_path).with_context(|| {
-                format!("failed to read bundle file: {}", bundle_path.display())
-            })?;
-            serde_json::from_str(&contents).context("failed to parse existing bundle JSON")?
-        }
-    };
+    let contents = fs::read_to_string(&bundle_path)
+        .with_context(|| format!("failed to read bundle file: {}", bundle_path.display()))?;
+    let public_bundle: Value =
+        serde_json::from_str(&contents).context("failed to parse existing bundle JSON")?;
 
-    let public_bundle_path = export_public_bundle(identity, &public_bundle, &encrypted_root)?;
+    let public_bundle_path = export_public_bundle(identity, &public_bundle, encrypted_root)?;
+
+    Ok(IdentityProvisioningOutcome {
+        identity: identity.to_string(),
+        generated: false,
+        recovery_mnemonic: None,
+        vault_path: vault_path.to_path_buf(),
+        bundle_path,
+        public_bundle_path,
+    })
+}
+
+fn write_identity_material(
+    identity: &str,
+    material: syft_crypto_protocol::identity::IdentityMaterial,
+    vault_path: &Path,
+    encrypted_root: &Path,
+    overwrite: bool,
+    generated: bool,
+) -> Result<IdentityProvisioningOutcome> {
+    let identity = identity.trim();
+    let slug = sanitize_identity(identity);
+    let key_path = vault_path.join("keys").join(format!("{slug}.key"));
+    let bundle_path = vault_path.join("bundles").join(format!("{slug}.json"));
+
+    if key_path.exists() && !overwrite {
+        return Err(anyhow!(
+            "identity {} already has key material in vault; refusing to overwrite",
+            identity
+        ));
+    }
+
+    fs::create_dir_all(key_path.parent().unwrap())
+        .with_context(|| format!("failed to ensure keys dir: {}", key_path.display()))?;
+    fs::create_dir_all(bundle_path.parent().unwrap())
+        .with_context(|| format!("failed to ensure bundles dir: {}", bundle_path.display()))?;
+
+    fs::write(&key_path, &material.key_file)
+        .with_context(|| format!("failed to write private key file: {}", key_path.display()))?;
+    fs::write(
+        &bundle_path,
+        serde_json::to_vec_pretty(&material.public_bundle)?,
+    )
+    .with_context(|| format!("failed to write bundle file: {}", bundle_path.display()))?;
+
+    let public_bundle_path =
+        export_public_bundle(identity, &material.public_bundle, encrypted_root)?;
 
     Ok(IdentityProvisioningOutcome {
         identity: identity.to_string(),
         generated,
-        recovery_mnemonic,
-        vault_path,
+        recovery_mnemonic: Some(material.recovery_key_mnemonic),
+        vault_path: vault_path.to_path_buf(),
         bundle_path,
         public_bundle_path,
     })
@@ -219,4 +307,24 @@ fn export_public_bundle(identity: &str, bundle: &Value, data_root: &Path) -> Res
 
 fn parse_public_bundle_from_str(body: &str) -> Result<PublicBundleInfo> {
     parse_public_bundle(body).map_err(|err| anyhow!("invalid bundle: {err}"))
+}
+
+/// Parse a public bundle JSON file into structured info (identity, fingerprint, DID, bundle).
+pub fn parse_public_bundle_file(path: &Path) -> Result<PublicBundleInfo> {
+    let body = fs::read_to_string(path)
+        .with_context(|| format!("failed to read bundle at {}", path.display()))?;
+    parse_public_bundle_from_str(&body)
+}
+
+fn resolve_vault_path(vault_override: Option<&Path>) -> PathBuf {
+    if let Some(v) = vault_override {
+        return v.to_path_buf();
+    }
+    if let Some(env_vault) = std::env::var_os("SYC_VAULT") {
+        return PathBuf::from(env_vault);
+    }
+    // Default to global ~/.syc to avoid accidental churn; callers can override via SYC_VAULT or explicit arg.
+    dirs::home_dir()
+        .map(|h| h.join(".syc"))
+        .unwrap_or_else(|| PathBuf::from(".syc"))
 }

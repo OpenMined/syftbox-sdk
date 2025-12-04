@@ -3,6 +3,9 @@ pub mod syftbox;
 
 pub use syft_url::SyftURL;
 
+pub use syft_crypto_protocol::datasite::{context::sanitize_identity, crypto::PublicBundleInfo};
+pub use syft_crypto_protocol::identity::identity_material_from_recovery_key;
+pub use syft_crypto_protocol::SyftRecoveryKey;
 pub use syftbox::app::SyftBoxApp;
 pub use syftbox::config::{
     default_syftbox_config_path, load_runtime_config, SyftBoxConfigFile, SyftboxRuntimeConfig,
@@ -15,7 +18,8 @@ pub use syftbox::endpoint::Endpoint;
 pub use syftbox::rpc::{check_requests, send_response};
 pub use syftbox::storage::{ReadPolicy, SyftBoxStorage, SyftStorageConfig, WritePolicy};
 pub use syftbox::syc::{
-    import_public_bundle, provision_local_identity, IdentityProvisioningOutcome,
+    import_public_bundle, parse_public_bundle_file, provision_local_identity,
+    restore_identity_from_mnemonic, IdentityProvisioningOutcome,
 };
 pub use syftbox::types::{RpcHeaders, RpcRequest, RpcResponse};
 
