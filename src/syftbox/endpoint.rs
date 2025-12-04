@@ -31,6 +31,40 @@ impl Endpoint {
         self.check_requests_in_folder(&self.path)
     }
 
+    /// Check for request files and return both successes and failures
+    /// Returns (successful_requests, failed_requests) where failed_requests contains
+    /// (path, error_message, raw_bytes for envelope parsing)
+    pub fn check_requests_with_failures(
+        &self,
+    ) -> Result<(Vec<(PathBuf, RpcRequest)>, Vec<(PathBuf, String, Vec<u8>)>)> {
+        let mut successes = Vec::new();
+        let mut failures = Vec::new();
+
+        if !self.path.exists() {
+            return Ok((successes, failures));
+        }
+
+        for entry in std::fs::read_dir(&self.path)? {
+            let entry = entry?;
+            let path = entry.path();
+
+            if path.extension().and_then(|s| s.to_str()) == Some("request") {
+                match self.read_request(&path) {
+                    Ok(request) => {
+                        successes.push((path, request));
+                    }
+                    Err(e) => {
+                        // Read raw bytes so caller can attempt envelope parsing
+                        let raw_bytes = std::fs::read(&path).unwrap_or_default();
+                        failures.push((path, e.to_string(), raw_bytes));
+                    }
+                }
+            }
+        }
+
+        Ok((successes, failures))
+    }
+
     /// Helper to check for requests in a specific folder
     fn check_requests_in_folder(&self, folder: &Path) -> Result<Vec<(PathBuf, RpcRequest)>> {
         let mut requests = Vec::new();
