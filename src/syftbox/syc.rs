@@ -350,3 +350,67 @@ fn resolve_vault_path(vault_override: Option<&Path>) -> PathBuf {
         .map(|h| h.join(".syc"))
         .unwrap_or_else(|| PathBuf::from(".syc"))
 }
+
+/// Detect identity from vault, handling multiple keys gracefully.
+///
+/// If multiple .key files exist, warns and returns the first one alphabetically.
+/// This is an improved version that doesn't error on multiple identities.
+pub fn detect_identity(vault: &Path) -> Result<String> {
+    use syft_crypto_protocol::datasite::context::{
+        fallback_identity_from_path, read_identity_from_key,
+    };
+
+    let keys_dir = vault.join("keys");
+    let mut identities: Vec<(String, PathBuf)> = Vec::new();
+
+    if keys_dir.exists() {
+        for entry in fs::read_dir(&keys_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if entry.file_type()?.is_file() {
+                // Only consider .key files (skip backups like .key.backup)
+                if path.extension().and_then(|e| e.to_str()) == Some("key") {
+                    let identity = read_identity_from_key(path.clone())
+                        .unwrap_or_else(|_| fallback_identity_from_path(path.clone()));
+                    identities.push((identity, path));
+                }
+            }
+        }
+    }
+
+    // Sort for consistent selection when multiple keys exist
+    identities.sort_by(|a, b| a.0.cmp(&b.0));
+
+    match identities.len() {
+        0 => Err(anyhow!(
+            "no identities found in vault (run `syc key generate` first)"
+        )),
+        1 => Ok(identities.remove(0).0),
+        _ => {
+            // Multiple keys found - warn and use the first one (sorted alphabetically)
+            eprintln!(
+                "⚠️  Warning: Multiple identity keys found in vault ({}):",
+                vault.display()
+            );
+            for (identity, path) in &identities {
+                eprintln!("    - {} ({})", identity, path.display());
+            }
+            let selected = identities.remove(0);
+            eprintln!(
+                "    Using first identity: {} (to change, specify --sender/--identity or remove extra .key files)",
+                selected.0
+            );
+            Ok(selected.0)
+        }
+    }
+}
+
+/// Resolve identity: use provided identity or detect from vault.
+///
+/// This wraps detect_identity with the option to provide an explicit identity.
+pub fn resolve_identity(provided: Option<&str>, vault: &Path) -> Result<String> {
+    match provided {
+        Some(identity) => Ok(identity.to_owned()),
+        None => detect_identity(vault),
+    }
+}

@@ -21,8 +21,8 @@ pub use syftbox::endpoint::Endpoint;
 pub use syftbox::rpc::{check_requests, send_response};
 pub use syftbox::storage::{ReadPolicy, SyftBoxStorage, SyftStorageConfig, WritePolicy};
 pub use syftbox::syc::{
-    import_public_bundle, parse_public_bundle_file, provision_local_identity,
-    provision_local_identity_with_options, restore_identity_from_mnemonic,
+    detect_identity, import_public_bundle, parse_public_bundle_file, provision_local_identity,
+    provision_local_identity_with_options, resolve_identity, restore_identity_from_mnemonic,
     IdentityProvisioningOutcome,
 };
 pub use syftbox::types::{RpcHeaders, RpcRequest, RpcResponse};
