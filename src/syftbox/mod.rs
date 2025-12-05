@@ -23,7 +23,8 @@ pub use endpoint::Endpoint;
 pub use rpc::{check_requests, send_response};
 pub use storage::{SyftBoxStorage, SyftStorageConfig};
 pub use syc::{
-    import_public_bundle, provision_local_identity, provision_local_identity_with_options,
+    detect_identity, import_public_bundle, provision_local_identity,
+    provision_local_identity_with_options, resolve_identity,
 };
 pub use types::{RpcHeaders, RpcRequest, RpcResponse};
 
