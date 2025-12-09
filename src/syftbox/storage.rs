@@ -157,7 +157,6 @@ impl SyftBoxStorage {
                 })?;
 
                 // Encrypt from shadow to datasites using syc file encrypt pattern
-                use syft_crypto_protocol::datasite::context::resolve_identity;
                 use syft_crypto_protocol::datasite::crypto::{
                     encrypt_envelope_for_recipient, load_private_keys_for_identity,
                     resolve_recipient_bundle,
@@ -167,7 +166,7 @@ impl SyftBoxStorage {
                     bail!("exactly one recipient is supported for encryption");
                 }
 
-                let sender_identity = resolve_identity(None, &backend.context.vault_path)?;
+                let sender_identity = syc::resolve_identity(None, &backend.context.vault_path)?;
                 let recipient_identity = recipients[0].clone();
                 let sender_keys =
                     load_private_keys_for_identity(&backend.context, &sender_identity)?;
@@ -235,7 +234,6 @@ impl SyftBoxStorage {
                 }
 
                 // Decrypt from datasites to shadow using syc file decrypt pattern
-                use syft_crypto_protocol::datasite::context::resolve_identity;
                 use syft_crypto_protocol::datasite::crypto::{
                     decrypt_envelope_for_recipient, load_private_keys_for_identity,
                     parse_optional_envelope, resolve_sender_bundle_for_decrypt,
@@ -248,7 +246,7 @@ impl SyftBoxStorage {
 
                 let plaintext = if let Some(envelope) = envelope {
                     // File is encrypted, MUST decrypt successfully to cache
-                    let identity = resolve_identity(None, &backend.context.vault_path)?;
+                    let identity = syc::resolve_identity(None, &backend.context.vault_path)?;
                     let recipient_keys =
                         load_private_keys_for_identity(&backend.context, &identity)?;
                     let sender_bundle =
@@ -572,7 +570,7 @@ impl SyftBoxStorage {
             WritePolicy::Plaintext => (Vec::new(), true, None),
             WritePolicy::Envelope { recipients, hint } => (recipients, false, hint),
         };
-        let opts = BytesWriteOpts {
+        let mut opts = BytesWriteOpts {
             relative,
             recipients,
             sender: None,
@@ -581,8 +579,13 @@ impl SyftBoxStorage {
             hint,
         };
         match &self.backend {
-            StorageBackend::SyctCrypto(backend) => write_bytes(&backend.context, &opts, data)
-                .map_err(|err| anyhow!("syc write failed: {err}")),
+            StorageBackend::SyctCrypto(backend) => {
+                if opts.sender.is_none() && !opts.plaintext && !opts.recipients.is_empty() {
+                    opts.sender = Some(syc::resolve_identity(None, &backend.context.vault_path)?);
+                }
+                write_bytes(&backend.context, &opts, data)
+                    .map_err(|err| anyhow!("syc write failed: {err}"))
+            }
             StorageBackend::PlainFs => {
                 if absolute_path.exists() && !overwrite {
                     bail!(
@@ -609,9 +612,10 @@ impl SyftBoxStorage {
         match &self.backend {
             StorageBackend::SyctCrypto(backend) => {
                 let relative = self.relative_from_root(absolute_path)?;
+                let identity = syc::resolve_identity(None, &backend.context.vault_path)?;
                 let opts = BytesReadOpts {
                     relative,
-                    identity: None,
+                    identity: Some(identity),
                     require_envelope: matches!(policy, ReadPolicy::RequireEnvelope),
                 };
                 let result = read_bytes(&backend.context, &opts)
