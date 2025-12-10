@@ -143,6 +143,7 @@ fn start_direct(config: &SyftboxRuntimeConfig) -> Result<()> {
 
     eprintln!("📄 Using SyftBox config: {}", config_path.display());
 
+    // Capture stderr initially to detect early crashes (e.g., code signing issues)
     let mut child = Command::new(&binary_path)
         .arg("-c")
         .arg(config_path)
@@ -152,7 +153,7 @@ fn start_direct(config: &SyftboxRuntimeConfig) -> Result<()> {
         .env("SYFTBOX_DATA_DIR", &config.data_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .with_context(|| {
             format!(
@@ -170,7 +171,25 @@ fn start_direct(config: &SyftboxRuntimeConfig) -> Result<()> {
         if status.success() {
             return Ok(());
         }
-        return Err(anyhow!("SyftBox exited immediately with status {}", status));
+
+        // Capture stderr output to report the crash reason
+        let mut stderr_output = String::new();
+        if let Some(mut stderr) = child.stderr.take() {
+            use std::io::Read;
+            let _ = stderr.read_to_string(&mut stderr_output);
+        }
+
+        let error_msg = if stderr_output.trim().is_empty() {
+            format!("SyftBox exited immediately with status {}. Check system logs for crash details (e.g., Console.app → DiagnosticReports)", status)
+        } else {
+            format!(
+                "SyftBox exited immediately with status {}: {}",
+                status,
+                stderr_output.trim()
+            )
+        };
+
+        return Err(anyhow!(error_msg));
     }
 
     std::mem::forget(child);
