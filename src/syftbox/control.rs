@@ -41,18 +41,15 @@ pub fn is_syftbox_running(config: &SyftboxRuntimeConfig) -> Result<bool> {
 }
 
 pub fn start_syftbox(config: &SyftboxRuntimeConfig) -> Result<bool> {
-    let mode = detect_mode(config)?;
-    if is_running_with_mode(config, mode)? {
+    // Force Direct mode for desktop until daemon supports -c properly
+    if is_running_with_mode(config, SyftBoxMode::Direct)? {
         return Ok(false);
     }
 
-    match mode {
-        SyftBoxMode::Sbenv => start_with_sbenv(config)?,
-        SyftBoxMode::Direct => start_direct(config)?,
-    }
+    start_direct(config)?;
 
     if !wait_for(
-        || is_running_with_mode(config, mode),
+        || is_running_with_mode(config, SyftBoxMode::Direct),
         true,
         Duration::from_secs(5),
     )? {
@@ -63,19 +60,16 @@ pub fn start_syftbox(config: &SyftboxRuntimeConfig) -> Result<bool> {
 }
 
 pub fn stop_syftbox(config: &SyftboxRuntimeConfig) -> Result<bool> {
-    let mode = detect_mode(config)?;
-    let pids = running_pids(config, mode)?;
+    // Force Direct mode for desktop until daemon supports -c properly
+    let pids = running_pids(config, SyftBoxMode::Direct)?;
     if pids.is_empty() {
         return Ok(false);
     }
 
-    match mode {
-        SyftBoxMode::Sbenv => stop_with_sbenv(config)?,
-        SyftBoxMode::Direct => stop_direct(&pids)?,
-    }
+    stop_direct(&pids)?;
 
     if !wait_for(
-        || is_running_with_mode(config, mode),
+        || is_running_with_mode(config, SyftBoxMode::Direct),
         false,
         Duration::from_secs(5),
     )? {
@@ -102,6 +96,7 @@ where
     }
 }
 
+#[allow(dead_code)]
 fn start_with_sbenv(config: &SyftboxRuntimeConfig) -> Result<()> {
     let data_dir = &config.data_dir;
     let status = Command::new("sbenv")
@@ -118,6 +113,7 @@ fn start_with_sbenv(config: &SyftboxRuntimeConfig) -> Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)]
 fn stop_with_sbenv(config: &SyftboxRuntimeConfig) -> Result<()> {
     let data_dir = &config.data_dir;
     let status = Command::new("sbenv")
@@ -150,6 +146,10 @@ fn start_direct(config: &SyftboxRuntimeConfig) -> Result<()> {
     let mut child = Command::new(&binary_path)
         .arg("-c")
         .arg(config_path)
+        .current_dir(&config.data_dir)
+        .env("HOME", &config.data_dir)
+        .env("SYFTBOX_CONFIG_PATH", &config.config_path)
+        .env("SYFTBOX_DATA_DIR", &config.data_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
