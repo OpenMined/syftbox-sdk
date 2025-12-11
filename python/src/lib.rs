@@ -8,7 +8,7 @@ use pyo3::types::{PyBytes, PyModule};
 use ::syftbox_sdk as core;
 use core::{
     default_syftbox_config_path, load_runtime_config,
-    syftbox::storage::{SyftStorageConfig, WritePolicy},
+    syftbox::storage::{ReadWithShadowResult, SyftStorageConfig, WritePolicy},
     syftbox::syc::{provision_local_identity, import_public_bundle, IdentityProvisioningOutcome},
     SyftBoxApp, SyftBoxStorage, SyftURL as CoreSyftURL,
     SyftboxRuntimeConfig,
@@ -330,6 +330,53 @@ impl PySyftBoxStorage {
             .ensure_dir(Path::new(&dir))
             .map_err(map_err)
     }
+
+    /// Read encrypted file using shadow folder pattern, returning sender metadata.
+    /// Returns a ReadWithShadowResult with data, sender identity, and fingerprint.
+    fn read_with_shadow_metadata(&self, datasite_path: String) -> PyResult<PyReadWithShadowResult> {
+        let result = self.inner
+            .read_with_shadow_metadata(Path::new(&datasite_path))
+            .map_err(map_err)?;
+        Ok(PyReadWithShadowResult { inner: result })
+    }
+}
+
+/// Result from read_with_shadow_metadata containing decrypted data and verified sender info
+#[pyclass(name = "ReadWithShadowResult", module = "syftbox_sdk")]
+struct PyReadWithShadowResult {
+    inner: ReadWithShadowResult,
+}
+
+#[pymethods]
+impl PyReadWithShadowResult {
+    /// Get the decrypted data as bytes
+    #[getter]
+    fn data<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
+        PyBytes::new_bound(py, &self.inner.data)
+    }
+
+    /// Get the verified sender identity (email)
+    /// Returns "(plaintext)" if the file was not encrypted
+    #[getter]
+    fn sender(&self) -> String {
+        self.inner.sender.clone()
+    }
+
+    /// Get the sender's identity key fingerprint (SHA256 hex)
+    /// Returns "(none)" if the file was not encrypted
+    #[getter]
+    fn fingerprint(&self) -> String {
+        self.inner.fingerprint.clone()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "ReadWithShadowResult(sender='{}', fingerprint='{}...', data_len={})",
+            self.inner.sender,
+            &self.inner.fingerprint[..std::cmp::min(12, self.inner.fingerprint.len())],
+            self.inner.data.len()
+        )
+    }
 }
 
 #[pyfunction]
@@ -444,6 +491,7 @@ fn syftbox_sdk(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySyftBoxApp>()?;
     m.add_class::<PySyftBoxStorage>()?;
     m.add_class::<PyIdentityProvisioningResult>()?;
+    m.add_class::<PyReadWithShadowResult>()?;
 
     m.add_function(wrap_pyfunction!(build_syft_url, m)?)?;
     m.add_function(wrap_pyfunction!(parse_syft_url, m)?)?;
