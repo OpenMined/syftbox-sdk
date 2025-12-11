@@ -13,6 +13,17 @@ use syft_crypto_protocol::datasite::{
 use tracing::warn;
 use walkdir::WalkDir;
 
+/// Result from read_with_shadow when metadata is requested
+#[derive(Debug, Clone)]
+pub struct ReadWithShadowResult {
+    /// Decrypted plaintext data
+    pub data: Vec<u8>,
+    /// Verified sender identity (email), or "(plaintext)" if file was not encrypted
+    pub sender: String,
+    /// Sender's identity key fingerprint (SHA256 hex), or "(none)" if file was not encrypted
+    pub fingerprint: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct SyftBoxStorage {
     root: PathBuf,
@@ -305,6 +316,76 @@ impl SyftBoxStorage {
             StorageBackend::PlainFs => {
                 // Fallback to direct read for PlainFs backend
                 self.read_plaintext_file(datasite_path)
+            }
+        }
+    }
+
+    /// Read encrypted file using shadow folder pattern, returning metadata about the sender.
+    /// This is the same as read_with_shadow but also returns verified sender identity.
+    pub fn read_with_shadow_metadata(&self, datasite_path: &Path) -> Result<ReadWithShadowResult> {
+        match &self.backend {
+            StorageBackend::SyctCrypto(backend) => {
+                // Get relative path from datasite root
+                let relative = self.relative_from_root(datasite_path)?;
+                use syft_crypto_protocol::datasite::context::resolve_shadow_path;
+                let shadow_path = resolve_shadow_path(&backend.context, &relative);
+
+                // Decrypt from datasites to shadow using syc file decrypt pattern
+                use syft_crypto_protocol::datasite::crypto::{
+                    decrypt_envelope_for_recipient, load_private_keys_for_identity,
+                    parse_optional_envelope, resolve_sender_bundle_for_decrypt,
+                };
+
+                let bytes = fs::read(datasite_path)?;
+                let envelope = parse_optional_envelope(&bytes)?;
+
+                if let Some(envelope) = envelope {
+                    // Extract sender metadata from the envelope prelude
+                    let sender_identity = envelope.prelude.sender.identity.clone();
+                    let sender_fingerprint = envelope.prelude.sender.ik_fingerprint.clone();
+
+                    // File is encrypted, decrypt it
+                    let identity = syc::resolve_identity(None, &backend.context.vault_path)?;
+                    let recipient_keys =
+                        load_private_keys_for_identity(&backend.context, &identity)?;
+                    let sender_bundle =
+                        resolve_sender_bundle_for_decrypt(&backend.context, &envelope)?;
+                    let plaintext = decrypt_envelope_for_recipient(
+                        &identity,
+                        &recipient_keys,
+                        &sender_bundle,
+                        &envelope,
+                    )?;
+
+                    // Cache to shadow
+                    if let Some(parent) = shadow_path.parent() {
+                        let _ = fs::create_dir_all(parent);
+                    }
+                    let _ = fs::write(&shadow_path, &plaintext);
+
+                    Ok(ReadWithShadowResult {
+                        data: plaintext,
+                        sender: sender_identity,
+                        fingerprint: sender_fingerprint,
+                    })
+                } else {
+                    // File is plaintext - no sender metadata available
+                    Ok(ReadWithShadowResult {
+                        data: bytes,
+                        sender: "(plaintext)".to_string(),
+                        fingerprint: "(none)".to_string(),
+                    })
+                }
+            }
+            StorageBackend::PlainFs => {
+                // Fallback - no crypto means no sender verification
+                let data = fs::read(datasite_path)
+                    .with_context(|| format!("failed to read {:?}", datasite_path))?;
+                Ok(ReadWithShadowResult {
+                    data,
+                    sender: "(plaintext)".to_string(),
+                    fingerprint: "(none)".to_string(),
+                })
             }
         }
     }
