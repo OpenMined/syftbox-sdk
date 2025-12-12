@@ -134,6 +134,19 @@ fn start_direct(config: &SyftboxRuntimeConfig) -> Result<()> {
     let binary_path = resolve_syftbox_binary(config)?;
     eprintln!("🔧 Requested SyftBox binary: {}", binary_path.display());
 
+    // Read config to extract control-plane URL/token so we can pass them explicitly.
+    let (client_url, client_token) =
+        match crate::syftbox::config::SyftBoxConfigFile::load(config_path) {
+            Ok(cfg) => {
+                let url = cfg
+                    .client_url
+                    .unwrap_or_else(|| "http://127.0.0.1:7938".to_string());
+                let token = cfg.client_token.unwrap_or_default();
+                (url, token)
+            }
+            Err(_) => ("http://127.0.0.1:7938".to_string(), String::new()),
+        };
+
     if !config_path.exists() {
         return Err(anyhow!(
             "SyftBox config file does not exist: {}",
@@ -144,9 +157,16 @@ fn start_direct(config: &SyftboxRuntimeConfig) -> Result<()> {
     eprintln!("📄 Using SyftBox config: {}", config_path.display());
 
     // Capture stderr initially to detect early crashes (e.g., code signing issues)
-    let mut child = Command::new(&binary_path)
-        .arg("-c")
+    let mut cmd = Command::new(&binary_path);
+    cmd.arg("-c")
         .arg(config_path)
+        .arg("--control-plane")
+        .arg("--client-url")
+        .arg(&client_url);
+    if !client_token.trim().is_empty() {
+        cmd.arg("--client-token").arg(&client_token);
+    }
+    let mut child = cmd
         .current_dir(&config.data_dir)
         .env("HOME", &config.data_dir)
         .env("SYFTBOX_CONFIG_PATH", &config.config_path)
