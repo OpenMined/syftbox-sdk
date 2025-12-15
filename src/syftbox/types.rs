@@ -1,5 +1,8 @@
 use anyhow::{anyhow, Result};
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use base64::{
+    engine::general_purpose::{STANDARD as BASE64_STD, URL_SAFE as BASE64_URL, URL_SAFE_NO_PAD},
+    Engine as _,
+};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -33,14 +36,17 @@ impl RpcRequest {
             created: now,
             expires: now + chrono::Duration::days(1),
             method,
-            body: BASE64.encode(body),
+            // SyftBox Go server/client uses URL-safe base64 encoding for request bodies.
+            body: BASE64_URL.encode(body),
         }
     }
 
     /// Decode the base64 body to bytes
     pub fn decode_body(&self) -> Result<Vec<u8>> {
-        BASE64
+        BASE64_STD
             .decode(&self.body)
+            .or_else(|_| BASE64_URL.decode(&self.body))
+            .or_else(|_| URL_SAFE_NO_PAD.decode(&self.body))
             .map_err(|e| anyhow!("Failed to decode body: {}", e))
     }
 
@@ -84,7 +90,7 @@ impl RpcResponse {
             created: now,
             expires: now + chrono::Duration::days(1),
             status_code,
-            body: BASE64.encode(body),
+            body: BASE64_URL.encode(body),
         }
     }
 
@@ -121,8 +127,10 @@ impl RpcResponse {
 
     /// Decode the base64 body to bytes
     pub fn decode_body(&self) -> Result<Vec<u8>> {
-        BASE64
+        BASE64_STD
             .decode(&self.body)
+            .or_else(|_| BASE64_URL.decode(&self.body))
+            .or_else(|_| URL_SAFE_NO_PAD.decode(&self.body))
             .map_err(|e| anyhow!("Failed to decode body: {}", e))
     }
 
