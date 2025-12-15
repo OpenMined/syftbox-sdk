@@ -60,7 +60,9 @@ impl Endpoint {
                     Err(e) => {
                         // Read raw bytes so caller can attempt envelope parsing
                         let raw_bytes = std::fs::read(&path).unwrap_or_default();
-                        failures.push((path, e.to_string(), raw_bytes));
+                        // Keep the full anyhow error chain so callers can detect root causes
+                        // like "sender bundle not cached".
+                        failures.push((path, format!("{:#}", e), raw_bytes));
                     }
                 }
             }
