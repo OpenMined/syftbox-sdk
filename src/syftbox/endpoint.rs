@@ -192,6 +192,20 @@ impl Endpoint {
             return Ok(responses);
         }
 
+        // By default, skip scanning our own datasite folder for `.response` files.
+        //
+        // When *we* send a response to an incoming request, the response is written into our
+        // own datasite folder but encrypted to the original requester. We can't (and don't need to)
+        // read/decrypt those files, and repeatedly attempting to parse them creates noisy logs.
+        //
+        // Enable for local/dev tests via env var, and always enable for unit tests.
+        let include_self = cfg!(test)
+            || std::env::var("SYFTBOX_INCLUDE_SELF_RESPONSES")
+                .map(|v| {
+                    v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes")
+                })
+                .unwrap_or(false);
+
         // Canonicalize paths to handle symlinks (e.g., /var -> /private/var on macOS)
         let canonical_datasites_root = datasites_root
             .canonicalize()
@@ -216,13 +230,20 @@ impl Endpoint {
 
         // Scan all identity folders
         // Responses are where you wrote requests (in other people's folders)
-        // Also check your own folder for test/development scenarios
         for entry in std::fs::read_dir(&datasites_root)? {
             let entry = entry?;
             let identity_path = entry.path();
 
             if !identity_path.is_dir() {
                 continue;
+            }
+
+            if !include_self {
+                if let Some(identity) = identity_path.file_name().and_then(|s| s.to_str()) {
+                    if identity == self.app.email {
+                        continue;
+                    }
+                }
             }
 
             // Check the endpoint folder for this identity
