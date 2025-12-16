@@ -3,6 +3,8 @@ use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs;
+#[cfg(not(unix))]
+use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::thread;
@@ -231,7 +233,20 @@ fn stop_direct(pids: &[u32]) -> Result<()> {
 }
 
 fn is_running_with_mode(config: &SyftboxRuntimeConfig, mode: SyftBoxMode) -> Result<bool> {
-    Ok(!running_pids(config, mode)?.is_empty())
+    #[cfg(unix)]
+    {
+        Ok(!running_pids(config, mode)?.is_empty())
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = mode;
+        let client_url = crate::syftbox::config::SyftBoxConfigFile::load(&config.config_path)
+            .ok()
+            .and_then(|cfg| cfg.client_url)
+            .unwrap_or_else(|| "http://127.0.0.1:7938".to_string());
+        Ok(probe_client_url(&client_url))
+    }
 }
 
 fn running_pids(config: &SyftboxRuntimeConfig, mode: SyftBoxMode) -> Result<Vec<u32>> {
@@ -280,10 +295,45 @@ fn running_pids(config: &SyftboxRuntimeConfig, mode: SyftBoxMode) -> Result<Vec<
     {
         let _ = config;
         let _ = mode;
-        Err(anyhow!(
-            "SyftBox process inspection is only supported on Unix-like platforms"
-        ))
+        Ok(Vec::new())
     }
+}
+
+#[cfg(not(unix))]
+fn probe_client_url(client_url: &str) -> bool {
+    let (host, port) = match parse_host_port(client_url) {
+        Some(v) => v,
+        None => ("127.0.0.1".to_string(), 7938),
+    };
+
+    let host = if host.eq_ignore_ascii_case("localhost") {
+        "127.0.0.1".to_string()
+    } else {
+        host
+    };
+
+    let addr: SocketAddr = match format!("{host}:{port}").parse() {
+        Ok(a) => a,
+        Err(_) => return false,
+    };
+
+    TcpStream::connect_timeout(&addr, Duration::from_millis(250)).is_ok()
+}
+
+#[cfg(not(unix))]
+fn parse_host_port(url: &str) -> Option<(String, u16)> {
+    let url = url.trim();
+    let without_scheme = url.split("://").nth(1).unwrap_or(url);
+    let hostport = without_scheme.split('/').next().unwrap_or(without_scheme);
+
+    let mut parts = hostport.rsplitn(2, ':');
+    let port_str = parts.next()?;
+    let host = parts.next()?.trim().to_string();
+    let port: u16 = port_str.parse().ok()?;
+    if host.is_empty() {
+        return None;
+    }
+    Some((host, port))
 }
 
 fn resolve_syftbox_binary(config: &SyftboxRuntimeConfig) -> Result<PathBuf> {
