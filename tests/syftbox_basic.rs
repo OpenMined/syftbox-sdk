@@ -7,6 +7,8 @@ use tempfile::TempDir;
 fn app_and_endpoint_round_trip_requests() {
     // Use plaintext backend for test isolation
     std::env::set_var("SYFTBOX_DISABLE_SYC", "1");
+    // Allow checking responses in own folder for round-trip test
+    std::env::set_var("SYFTBOX_INCLUDE_SELF_RESPONSES", "1");
 
     let tmp = TempDir::new().unwrap();
     let app = SyftBoxApp::new(tmp.path(), "user@example.com", "demo").unwrap();
