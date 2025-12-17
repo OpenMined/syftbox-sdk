@@ -10,6 +10,17 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+const SYFTBOX_PIDFILE_NAME: &str = "syftbox.pid";
+
+fn hide_console_window(cmd: &mut Command) {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum SyftBoxMode {
     Sbenv,
@@ -69,6 +80,7 @@ pub fn stop_syftbox(config: &SyftboxRuntimeConfig) -> Result<bool> {
     }
 
     stop_direct(&pids)?;
+    remove_pidfile(config);
 
     if !wait_for(
         || is_running_with_mode(config, SyftBoxMode::Direct),
@@ -101,12 +113,12 @@ where
 #[allow(dead_code)]
 fn start_with_sbenv(config: &SyftboxRuntimeConfig) -> Result<()> {
     let data_dir = &config.data_dir;
-    let status = Command::new("sbenv")
-        .arg("start")
+    let mut cmd = Command::new("sbenv");
+    cmd.arg("start")
         .arg("--skip-login-check")
-        .current_dir(data_dir)
-        .status()
-        .context("Failed to execute sbenv start")?;
+        .current_dir(data_dir);
+    hide_console_window(&mut cmd);
+    let status = cmd.status().context("Failed to execute sbenv start")?;
 
     if !status.success() {
         return Err(anyhow!("sbenv start exited with status {}", status));
@@ -118,11 +130,10 @@ fn start_with_sbenv(config: &SyftboxRuntimeConfig) -> Result<()> {
 #[allow(dead_code)]
 fn stop_with_sbenv(config: &SyftboxRuntimeConfig) -> Result<()> {
     let data_dir = &config.data_dir;
-    let status = Command::new("sbenv")
-        .arg("stop")
-        .current_dir(data_dir)
-        .status()
-        .context("Failed to execute sbenv stop")?;
+    let mut cmd = Command::new("sbenv");
+    cmd.arg("stop").current_dir(data_dir);
+    hide_console_window(&mut cmd);
+    let status = cmd.status().context("Failed to execute sbenv stop")?;
 
     if !status.success() {
         return Err(anyhow!("sbenv stop exited with status {}", status));
@@ -168,6 +179,7 @@ fn start_direct(config: &SyftboxRuntimeConfig) -> Result<()> {
     if !client_token.trim().is_empty() {
         cmd.arg("--client-token").arg(&client_token);
     }
+    hide_console_window(&mut cmd);
     let mut child = cmd
         .current_dir(&config.data_dir)
         .env("HOME", &config.data_dir)
@@ -214,22 +226,46 @@ fn start_direct(config: &SyftboxRuntimeConfig) -> Result<()> {
         return Err(anyhow!(error_msg));
     }
 
+    write_pidfile(config, child.id());
     std::mem::forget(child);
     Ok(())
 }
 
 fn stop_direct(pids: &[u32]) -> Result<()> {
-    for pid in pids {
-        let mut cmd = Command::new("kill");
-        cmd.arg("-TERM").arg(pid.to_string());
-        let status = cmd
-            .status()
-            .with_context(|| format!("Failed to send TERM to process {}", pid))?;
-        if !status.success() {
-            return Err(anyhow!("Failed to terminate syftbox process {}", pid));
+    #[cfg(target_os = "windows")]
+    {
+        for pid in pids {
+            let mut cmd = Command::new("taskkill");
+            cmd.args(["/PID", &pid.to_string(), "/T", "/F"]);
+            hide_console_window(&mut cmd);
+            let output = cmd
+                .output()
+                .with_context(|| format!("Failed to execute taskkill for pid {}", pid))?;
+            if !output.status.success() {
+                return Err(anyhow!(
+                    "Failed to terminate syftbox process {} (taskkill status: {})",
+                    pid,
+                    output.status
+                ));
+            }
         }
+        Ok(())
     }
-    Ok(())
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        for pid in pids {
+            let mut cmd = Command::new("kill");
+            cmd.arg("-TERM").arg(pid.to_string());
+            let status = cmd
+                .status()
+                .with_context(|| format!("Failed to send TERM to process {}", pid))?;
+            if !status.success() {
+                return Err(anyhow!("Failed to terminate syftbox process {}", pid));
+            }
+        }
+        Ok(())
+    }
 }
 
 fn is_running_with_mode(config: &SyftboxRuntimeConfig, mode: SyftBoxMode) -> Result<bool> {
@@ -293,9 +329,58 @@ fn running_pids(config: &SyftboxRuntimeConfig, mode: SyftBoxMode) -> Result<Vec<
 
     #[cfg(not(unix))]
     {
-        let _ = config;
         let _ = mode;
-        Ok(Vec::new())
+
+        let config_str = config.config_path.to_string_lossy();
+        let data_dir_str = config.data_dir.to_string_lossy();
+
+        let mut pids: Vec<u32> = Vec::new();
+
+        // Best-effort PID enumeration on Windows (enables reliable stop during updates).
+        #[cfg(target_os = "windows")]
+        {
+            let cmd = r#"Get-CimInstance Win32_Process -Filter "Name='syftbox.exe'" | ForEach-Object { "$($_.ProcessId)|$($_.CommandLine)" }"#;
+            let mut ps = Command::new("powershell");
+            ps.args(["-NoProfile", "-Command", cmd]);
+            hide_console_window(&mut ps);
+            if let Ok(output) = ps.output() {
+                if output.status.success() {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    for line in stdout.lines() {
+                        let mut parts = line.splitn(2, '|');
+                        let pid_str = parts.next().unwrap_or("").trim();
+                        let cmdline = parts.next().unwrap_or("").trim();
+                        if pid_str.is_empty() {
+                            continue;
+                        }
+                        if !cmdline.is_empty()
+                            && !(cmdline.contains(config_str.as_ref())
+                                || cmdline.contains(data_dir_str.as_ref()))
+                        {
+                            continue;
+                        }
+                        if let Ok(pid) = pid_str.parse::<u32>() {
+                            pids.push(pid);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Fallback: stored pidfile if present (works cross-platform for non-unix).
+        if pids.is_empty() {
+            let pid_path = pidfile_path(config);
+            if let Some(pid) = fs::read_to_string(&pid_path)
+                .ok()
+                .and_then(|s| s.trim().parse::<u32>().ok())
+            {
+                pids.push(pid);
+            }
+        }
+
+        pids.sort_unstable();
+        pids.dedup();
+        Ok(pids)
     }
 }
 
@@ -430,8 +515,28 @@ fn parse_pid(line: &str) -> Option<u32> {
 }
 
 #[cfg(not(unix))]
+#[allow(dead_code)]
 fn parse_pid(_line: &str) -> Option<u32> {
     None
+}
+
+fn pidfile_path(config: &SyftboxRuntimeConfig) -> PathBuf {
+    config
+        .data_dir
+        .join(".syftbox")
+        .join(SYFTBOX_PIDFILE_NAME)
+}
+
+fn write_pidfile(config: &SyftboxRuntimeConfig, pid: u32) {
+    let path = pidfile_path(config);
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let _ = fs::write(path, pid.to_string());
+}
+
+fn remove_pidfile(config: &SyftboxRuntimeConfig) {
+    let _ = fs::remove_file(pidfile_path(config));
 }
 
 pub fn syftbox_paths(config: &SyftboxRuntimeConfig) -> Result<(PathBuf, PathBuf)> {
