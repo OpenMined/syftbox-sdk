@@ -12,13 +12,11 @@ use std::time::{Duration, Instant};
 
 const SYFTBOX_PIDFILE_NAME: &str = "syftbox.pid";
 
+#[cfg(target_os = "windows")]
 fn hide_console_window(cmd: &mut Command) {
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    cmd.creation_flags(CREATE_NO_WINDOW);
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -117,6 +115,7 @@ fn start_with_sbenv(config: &SyftboxRuntimeConfig) -> Result<()> {
     cmd.arg("start")
         .arg("--skip-login-check")
         .current_dir(data_dir);
+    #[cfg(target_os = "windows")]
     hide_console_window(&mut cmd);
     let status = cmd.status().context("Failed to execute sbenv start")?;
 
@@ -132,6 +131,7 @@ fn stop_with_sbenv(config: &SyftboxRuntimeConfig) -> Result<()> {
     let data_dir = &config.data_dir;
     let mut cmd = Command::new("sbenv");
     cmd.arg("stop").current_dir(data_dir);
+    #[cfg(target_os = "windows")]
     hide_console_window(&mut cmd);
     let status = cmd.status().context("Failed to execute sbenv stop")?;
 
@@ -179,6 +179,7 @@ fn start_direct(config: &SyftboxRuntimeConfig) -> Result<()> {
     if !client_token.trim().is_empty() {
         cmd.arg("--client-token").arg(&client_token);
     }
+    #[cfg(target_os = "windows")]
     hide_console_window(&mut cmd);
     let mut child = cmd
         .current_dir(&config.data_dir)
@@ -521,10 +522,7 @@ fn parse_pid(_line: &str) -> Option<u32> {
 }
 
 fn pidfile_path(config: &SyftboxRuntimeConfig) -> PathBuf {
-    config
-        .data_dir
-        .join(".syftbox")
-        .join(SYFTBOX_PIDFILE_NAME)
+    config.data_dir.join(".syftbox").join(SYFTBOX_PIDFILE_NAME)
 }
 
 fn write_pidfile(config: &SyftboxRuntimeConfig, pid: u32) {
