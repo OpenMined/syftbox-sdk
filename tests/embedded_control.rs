@@ -110,6 +110,8 @@ fn embedded_backend_starts_and_stops() {
     let cp_port = pick_free_port();
     let client_url = format!("http://127.0.0.1:{cp_port}");
     let cfg_path = tmp.path().join("config.json");
+    // Use forward slashes for JSON compatibility on Windows
+    let data_dir_str = data_dir.display().to_string().replace('\\', "/");
     std::fs::write(
         &cfg_path,
         format!(
@@ -120,7 +122,7 @@ fn embedded_backend_starts_and_stops() {
   "client_url": "{}",
   "client_token": ""
 }}"#,
-            data_dir.display(),
+            data_dir_str,
             server.url(),
             client_url
         ),
