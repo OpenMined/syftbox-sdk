@@ -12,6 +12,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const SYFTBOX_PIDFILE_NAME: &str = "syftbox.pid";
+const SYFTBOX_EMBEDDED_PIDFILE_NAME: &str = "syftbox.embedded.pid";
 
 #[cfg(target_os = "windows")]
 fn hide_console_window(cmd: &mut Command) {
@@ -35,8 +36,13 @@ fn use_embedded_backend() -> bool {
 }
 
 #[cfg(feature = "embedded")]
-static EMBEDDED_DAEMON: OnceLock<Mutex<Option<syftbox_rs::daemon::ThreadedDaemonHandle>>> =
-    OnceLock::new();
+struct EmbeddedDaemonState {
+    handle: syftbox_rs::daemon::ThreadedDaemonHandle,
+    pidfile: PathBuf,
+}
+
+#[cfg(feature = "embedded")]
+static EMBEDDED_DAEMON: OnceLock<Mutex<Option<EmbeddedDaemonState>>> = OnceLock::new();
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum SyftBoxMode {
     Sbenv,
@@ -488,6 +494,72 @@ fn resolve_client_url(config: &SyftboxRuntimeConfig) -> String {
 }
 
 #[cfg(feature = "embedded")]
+fn embedded_pidfile_path(config: &SyftboxRuntimeConfig) -> PathBuf {
+    config
+        .config_path
+        .parent()
+        .unwrap_or(config.data_dir.as_path())
+        .join(SYFTBOX_EMBEDDED_PIDFILE_NAME)
+}
+
+#[cfg(feature = "embedded")]
+fn is_pid_running(pid: u32) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        let mut cmd = Command::new("tasklist");
+        cmd.args(["/FI", &format!("PID eq {}", pid)]);
+        hide_console_window(&mut cmd);
+        if let Ok(output) = cmd.output() {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                return stdout.contains(&pid.to_string());
+            }
+        }
+        false
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        Command::new("ps")
+            .args(["-p", &pid.to_string()])
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    }
+}
+
+#[cfg(feature = "embedded")]
+fn ensure_embedded_lock(config: &SyftboxRuntimeConfig) -> Result<PathBuf> {
+    let pidfile = embedded_pidfile_path(config);
+    if let Ok(pid_str) = fs::read_to_string(&pidfile) {
+        if let Ok(pid) = pid_str.trim().parse::<u32>() {
+            let current = std::process::id();
+            if pid != current && is_pid_running(pid) {
+                return Err(anyhow!(
+                    "Another BioVault instance (pid {}) is already using {}",
+                    pid,
+                    config.data_dir.display()
+                ));
+            }
+        }
+    }
+
+    if let Some(parent) = pidfile.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create {}", parent.display()))?;
+    }
+    fs::write(&pidfile, format!("{}\n", std::process::id()))
+        .with_context(|| format!("Failed to write {}", pidfile.display()))?;
+
+    Ok(pidfile)
+}
+
+#[cfg(feature = "embedded")]
+fn release_embedded_lock(pidfile: PathBuf) {
+    let _ = fs::remove_file(pidfile);
+}
+
+#[cfg(feature = "embedded")]
 fn start_embedded(config: &SyftboxRuntimeConfig) -> Result<()> {
     let config_path = &config.config_path;
     if !config_path.exists() {
@@ -542,17 +614,27 @@ fn start_embedded(config: &SyftboxRuntimeConfig) -> Result<()> {
     if guard.is_some() {
         return Ok(());
     }
-    let handle = syftbox_rs::daemon::start_threaded(cfg, opts)?;
-    *guard = Some(handle);
-    Ok(())
+
+    let pidfile = ensure_embedded_lock(config)?;
+    match syftbox_rs::daemon::start_threaded(cfg, opts) {
+        Ok(handle) => {
+            *guard = Some(EmbeddedDaemonState { handle, pidfile });
+            Ok(())
+        }
+        Err(e) => {
+            release_embedded_lock(pidfile);
+            Err(e)
+        }
+    }
 }
 
 #[cfg(feature = "embedded")]
 fn stop_embedded() -> Result<()> {
     if let Some(cell) = EMBEDDED_DAEMON.get() {
         let mut guard = cell.lock().unwrap();
-        if let Some(handle) = guard.take() {
-            handle.stop()?;
+        if let Some(state) = guard.take() {
+            state.handle.stop()?;
+            release_embedded_lock(state.pidfile);
         }
     }
     Ok(())
