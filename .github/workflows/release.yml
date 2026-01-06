@@ -39,8 +39,8 @@ jobs:
 
       - name: Setup workspace dependencies
         run: |
-          chmod +x scripts/setup-workspace.sh
-          ./scripts/setup-workspace.sh
+          chmod +x repo
+          ./repo --init --https
 
       - uses: actions/setup-python@v5
         with:
@@ -86,8 +86,8 @@ jobs:
 
       - name: Setup workspace dependencies
         run: |
-          chmod +x scripts/setup-workspace.sh
-          ./scripts/setup-workspace.sh
+          chmod +x repo
+          ./repo --init --https
 
       - name: Install protoc
         uses: arduino/setup-protoc@v2
@@ -151,8 +151,8 @@ jobs:
       - name: Setup workspace dependencies
         shell: bash
         run: |
-          chmod +x scripts/setup-workspace.sh
-          ./scripts/setup-workspace.sh
+          chmod +x repo
+          ./repo --init --https
 
       - name: Install protoc
         uses: arduino/setup-protoc@v2
@@ -209,8 +209,8 @@ jobs:
 
       - name: Setup workspace dependencies
         run: |
-          chmod +x scripts/setup-workspace.sh
-          ./scripts/setup-workspace.sh
+          chmod +x repo
+          ./repo --init --https
 
       - name: Install protoc
         uses: arduino/setup-protoc@v2
@@ -242,8 +242,8 @@ jobs:
 
       - name: Setup workspace dependencies
         run: |
-          chmod +x scripts/setup-workspace.sh
-          ./scripts/setup-workspace.sh
+          chmod +x repo
+          ./repo --init --https
 
       - name: Install protoc
         uses: arduino/setup-protoc@v2
