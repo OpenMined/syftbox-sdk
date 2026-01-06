@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Setup script for syftbox-sdk workspace
-# Syncs dependencies using the repo tool (with HTTPS for CI)
+# Clones dependencies to PARENT directory as siblings
 #
 # Dependencies:
 #   - syft-crypto-core (required for crypto protocol)
@@ -16,6 +16,8 @@ REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 PARENT_DIR="$(dirname "$REPO_ROOT")"
 
 echo "Setting up syftbox-sdk workspace..."
+echo "  REPO_ROOT: $REPO_ROOT"
+echo "  PARENT_DIR: $PARENT_DIR"
 
 # Check if we're in a repo-managed workspace (parent has .repo)
 if [[ -d "$PARENT_DIR/.repo" ]]; then
@@ -23,37 +25,35 @@ if [[ -d "$PARENT_DIR/.repo" ]]; then
     exit 0
 fi
 
-# Use repo tool if available
-if [[ -f "$REPO_ROOT/repo" ]]; then
-    echo "Using repo tool to sync dependencies..."
-    cd "$REPO_ROOT"
-    chmod +x repo
-
-    # Use --https for CI environments (no SSH keys)
-    ./repo --init --https
-    ./repo sync
-
-    echo "Workspace setup complete!"
-    exit 0
-fi
-
-# Fallback: clone directly with git (HTTPS for CI compatibility)
-echo "Repo tool not found, using git clone fallback..."
-
-# Clone syft-crypto-core (required)
-if [[ ! -d "$PARENT_DIR/syft-crypto-core" ]]; then
+# Clone syft-crypto-core (required) to parent directory
+if [[ -d "$PARENT_DIR/syft-crypto-core" ]]; then
+    echo "syft-crypto-core already exists at $PARENT_DIR/syft-crypto-core"
+elif [[ -L "$REPO_ROOT/syft-crypto-core" ]]; then
+    # Remove stale symlink if it exists
+    echo "Removing stale syft-crypto-core symlink..."
+    rm -f "$REPO_ROOT/syft-crypto-core"
     echo "Cloning syft-crypto-core to $PARENT_DIR/syft-crypto-core..."
     git clone --recursive https://github.com/OpenMined/syft-crypto-core.git "$PARENT_DIR/syft-crypto-core"
 else
-    echo "syft-crypto-core already exists"
+    echo "Cloning syft-crypto-core to $PARENT_DIR/syft-crypto-core..."
+    git clone --recursive https://github.com/OpenMined/syft-crypto-core.git "$PARENT_DIR/syft-crypto-core"
 fi
 
-# Clone syftbox (for embedded feature)
-if [[ ! -d "$PARENT_DIR/syftbox" ]]; then
+# Clone syftbox (for embedded feature) to parent directory
+if [[ -d "$PARENT_DIR/syftbox" ]]; then
+    echo "syftbox already exists at $PARENT_DIR/syftbox"
+elif [[ -L "$REPO_ROOT/syftbox" ]]; then
+    # Remove stale symlink if it exists
+    echo "Removing stale syftbox symlink..."
+    rm -f "$REPO_ROOT/syftbox"
     echo "Cloning syftbox to $PARENT_DIR/syftbox..."
     git clone -b madhava/biovault https://github.com/OpenMined/syftbox.git "$PARENT_DIR/syftbox"
 else
-    echo "syftbox already exists"
+    echo "Cloning syftbox to $PARENT_DIR/syftbox..."
+    git clone -b madhava/biovault https://github.com/OpenMined/syftbox.git "$PARENT_DIR/syftbox"
 fi
 
 echo "Workspace setup complete!"
+echo "Dependencies are at:"
+echo "  $PARENT_DIR/syft-crypto-core"
+echo "  $PARENT_DIR/syftbox"
