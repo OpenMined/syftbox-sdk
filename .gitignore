@@ -222,3 +222,4 @@ Cargo.lock
 
 # Workspace symlinks (created by repo tool)
 /syft-crypto-core
+/syftbox

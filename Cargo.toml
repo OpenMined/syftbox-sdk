@@ -11,6 +11,7 @@ default = ["crypto", "process", "auth"]
 crypto = []
 process = []
 auth = ["reqwest", "tokio"]
+embedded = ["dep:syftbox-rs"]
 test-plaintext = []
 
 [dependencies]
@@ -29,6 +30,7 @@ uuid = { version = "1.10", features = ["v4"] }
 serde_yaml = "0.9"
 
 syft-crypto-protocol = { path = "../syft-crypto-core/protocol", version = "0.1.2-beta.2" }
+syftbox-rs = { path = "../syftbox/rust", package = "syftbox-rs", optional = true }
 
 [dev-dependencies]
 tempfile = "3.12"
