@@ -19,6 +19,10 @@ echo "Setting up syftbox-sdk workspace..."
 echo "  REPO_ROOT: $REPO_ROOT"
 echo "  PARENT_DIR: $PARENT_DIR"
 
+# Configure git to use HTTPS instead of SSH for GitHub (needed for CI)
+# This rewrites git@github.com: URLs to https://github.com/
+git config --global url."https://github.com/".insteadOf "git@github.com:"
+
 # Check if we're in a repo-managed workspace (parent has .repo)
 if [[ -d "$PARENT_DIR/.repo" ]]; then
     echo "Detected repo-managed parent workspace - dependencies already synced"
