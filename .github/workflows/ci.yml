@@ -24,11 +24,19 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup workspace dependencies
+      - name: Setup workspace dependencies (Unix)
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           chmod +x repo
           ./repo --init --https
+
+      - name: Setup workspace dependencies (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          chmod +x scripts/setup-workspace.sh
+          ./scripts/setup-workspace.sh
 
       - name: Install protoc
         uses: arduino/setup-protoc@v2
