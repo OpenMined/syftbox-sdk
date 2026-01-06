@@ -3,14 +3,16 @@ use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs;
-#[cfg(not(unix))]
 use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+#[cfg(feature = "embedded")]
+use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
 const SYFTBOX_PIDFILE_NAME: &str = "syftbox.pid";
+const SYFTBOX_EMBEDDED_PIDFILE_NAME: &str = "syftbox.embedded.pid";
 
 #[cfg(target_os = "windows")]
 fn hide_console_window(cmd: &mut Command) {
@@ -18,7 +20,29 @@ fn hide_console_window(cmd: &mut Command) {
     const CREATE_NO_WINDOW: u32 = 0x08000000;
     cmd.creation_flags(CREATE_NO_WINDOW);
 }
+fn use_embedded_backend() -> bool {
+    #[cfg(feature = "embedded")]
+    {
+        env::var("BV_SYFTBOX_BACKEND")
+            .ok()
+            .map(|v| v.eq_ignore_ascii_case("embedded"))
+            .unwrap_or(false)
+    }
 
+    #[cfg(not(feature = "embedded"))]
+    {
+        false
+    }
+}
+
+#[cfg(feature = "embedded")]
+struct EmbeddedDaemonState {
+    handle: syftbox_rs::daemon::ThreadedDaemonHandle,
+    pidfile: PathBuf,
+}
+
+#[cfg(feature = "embedded")]
+static EMBEDDED_DAEMON: OnceLock<Mutex<Option<EmbeddedDaemonState>>> = OnceLock::new();
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum SyftBoxMode {
     Sbenv,
@@ -52,6 +76,26 @@ pub fn is_syftbox_running(config: &SyftboxRuntimeConfig) -> Result<bool> {
 }
 
 pub fn start_syftbox(config: &SyftboxRuntimeConfig) -> Result<bool> {
+    if use_embedded_backend() {
+        // Treat embedded as Direct mode: no external process to inspect.
+        if is_running_with_mode(config, SyftBoxMode::Direct)? {
+            return Ok(false);
+        }
+
+        #[cfg(feature = "embedded")]
+        start_embedded(config)?;
+
+        if !wait_for(
+            || is_running_with_mode(config, SyftBoxMode::Direct),
+            true,
+            Duration::from_secs(5),
+        )? {
+            return Err(anyhow!("SyftBox did not start in time"));
+        }
+
+        return Ok(true);
+    }
+
     // Force Direct mode for desktop until daemon supports -c properly
     if is_running_with_mode(config, SyftBoxMode::Direct)? {
         return Ok(false);
@@ -71,6 +115,25 @@ pub fn start_syftbox(config: &SyftboxRuntimeConfig) -> Result<bool> {
 }
 
 pub fn stop_syftbox(config: &SyftboxRuntimeConfig) -> Result<bool> {
+    if use_embedded_backend() {
+        if !is_running_with_mode(config, SyftBoxMode::Direct)? {
+            return Ok(false);
+        }
+
+        #[cfg(feature = "embedded")]
+        stop_embedded()?;
+
+        if !wait_for(
+            || is_running_with_mode(config, SyftBoxMode::Direct),
+            false,
+            Duration::from_secs(5),
+        )? {
+            return Err(anyhow!("SyftBox did not stop in time"));
+        }
+
+        return Ok(true);
+    }
+
     // Force Direct mode for desktop until daemon supports -c properly
     let pids = running_pids(config, SyftBoxMode::Direct)?;
     if pids.is_empty() {
@@ -270,6 +333,12 @@ fn stop_direct(pids: &[u32]) -> Result<()> {
 }
 
 fn is_running_with_mode(config: &SyftboxRuntimeConfig, mode: SyftBoxMode) -> Result<bool> {
+    if use_embedded_backend() {
+        let _ = mode;
+        let client_url = resolve_client_url(config);
+        return Ok(probe_client_url(&client_url));
+    }
+
     #[cfg(unix)]
     {
         Ok(!running_pids(config, mode)?.is_empty())
@@ -278,10 +347,7 @@ fn is_running_with_mode(config: &SyftboxRuntimeConfig, mode: SyftBoxMode) -> Res
     #[cfg(not(unix))]
     {
         let _ = mode;
-        let client_url = crate::syftbox::config::SyftBoxConfigFile::load(&config.config_path)
-            .ok()
-            .and_then(|cfg| cfg.client_url)
-            .unwrap_or_else(|| "http://127.0.0.1:7938".to_string());
+        let client_url = resolve_client_url(config);
         Ok(probe_client_url(&client_url))
     }
 }
@@ -385,7 +451,6 @@ fn running_pids(config: &SyftboxRuntimeConfig, mode: SyftBoxMode) -> Result<Vec<
     }
 }
 
-#[cfg(not(unix))]
 fn probe_client_url(client_url: &str) -> bool {
     let (host, port) = match parse_host_port(client_url) {
         Some(v) => v,
@@ -406,7 +471,6 @@ fn probe_client_url(client_url: &str) -> bool {
     TcpStream::connect_timeout(&addr, Duration::from_millis(250)).is_ok()
 }
 
-#[cfg(not(unix))]
 fn parse_host_port(url: &str) -> Option<(String, u16)> {
     let url = url.trim();
     let without_scheme = url.split("://").nth(1).unwrap_or(url);
@@ -420,6 +484,160 @@ fn parse_host_port(url: &str) -> Option<(String, u16)> {
         return None;
     }
     Some((host, port))
+}
+
+fn resolve_client_url(config: &SyftboxRuntimeConfig) -> String {
+    crate::syftbox::config::SyftBoxConfigFile::load(&config.config_path)
+        .ok()
+        .and_then(|cfg| cfg.client_url)
+        .unwrap_or_else(|| "http://127.0.0.1:7938".to_string())
+}
+
+#[cfg(feature = "embedded")]
+fn embedded_pidfile_path(config: &SyftboxRuntimeConfig) -> PathBuf {
+    config
+        .config_path
+        .parent()
+        .unwrap_or(config.data_dir.as_path())
+        .join(SYFTBOX_EMBEDDED_PIDFILE_NAME)
+}
+
+#[cfg(feature = "embedded")]
+fn is_pid_running(pid: u32) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        let mut cmd = Command::new("tasklist");
+        cmd.args(["/FI", &format!("PID eq {}", pid)]);
+        hide_console_window(&mut cmd);
+        if let Ok(output) = cmd.output() {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                return stdout.contains(&pid.to_string());
+            }
+        }
+        false
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        Command::new("ps")
+            .args(["-p", &pid.to_string()])
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    }
+}
+
+#[cfg(feature = "embedded")]
+fn ensure_embedded_lock(config: &SyftboxRuntimeConfig) -> Result<PathBuf> {
+    let pidfile = embedded_pidfile_path(config);
+    if let Ok(pid_str) = fs::read_to_string(&pidfile) {
+        if let Ok(pid) = pid_str.trim().parse::<u32>() {
+            let current = std::process::id();
+            if pid != current && is_pid_running(pid) {
+                return Err(anyhow!(
+                    "Another BioVault instance (pid {}) is already using {}",
+                    pid,
+                    config.data_dir.display()
+                ));
+            }
+        }
+    }
+
+    if let Some(parent) = pidfile.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create {}", parent.display()))?;
+    }
+    fs::write(&pidfile, format!("{}\n", std::process::id()))
+        .with_context(|| format!("Failed to write {}", pidfile.display()))?;
+
+    Ok(pidfile)
+}
+
+#[cfg(feature = "embedded")]
+fn release_embedded_lock(pidfile: PathBuf) {
+    let _ = fs::remove_file(pidfile);
+}
+
+#[cfg(feature = "embedded")]
+fn start_embedded(config: &SyftboxRuntimeConfig) -> Result<()> {
+    let config_path = &config.config_path;
+    if !config_path.exists() {
+        return Err(anyhow!(
+            "SyftBox config file does not exist: {}",
+            config_path.display()
+        ));
+    }
+
+    // Load SyftBox config file for control-plane hints (optional).
+    let cfg_file = crate::syftbox::config::SyftBoxConfigFile::load(config_path).ok();
+    let client_url = cfg_file
+        .as_ref()
+        .and_then(|c| c.client_url.clone())
+        .unwrap_or_else(|| "http://127.0.0.1:7938".to_string());
+    let client_token = cfg_file
+        .as_ref()
+        .and_then(|c| c.client_token.clone())
+        .unwrap_or_default();
+
+    // Match CLI behavior: prefer binding to the configured control-plane address.
+    let http_addr = parse_host_port(&client_url)
+        .map(|(host, port)| format!("{host}:{port}"))
+        .unwrap_or_else(|| "127.0.0.1:7938".to_string());
+
+    let overrides = syftbox_rs::config::ConfigOverrides {
+        data_dir: Some(config.data_dir.clone()),
+        email: Some(config.email.clone()),
+        server_url: None,
+        client_url: Some(client_url),
+        client_token: Some(client_token),
+    };
+    let cfg = syftbox_rs::config::Config::load_with_overrides(config_path, overrides)?;
+
+    let log_path = config
+        .config_path
+        .parent()
+        .unwrap_or(config.config_path.as_path())
+        .join("logs")
+        .join("syftbox.log");
+
+    let opts = syftbox_rs::daemon::DaemonOptions {
+        http_addr: Some(http_addr),
+        http_token: None,
+        // Retry forever: don't exit if server is temporarily down.
+        healthz_max_attempts: None,
+        log_path: Some(log_path),
+    };
+
+    let cell = EMBEDDED_DAEMON.get_or_init(|| Mutex::new(None));
+    let mut guard = cell.lock().unwrap();
+    if guard.is_some() {
+        return Ok(());
+    }
+
+    let pidfile = ensure_embedded_lock(config)?;
+    match syftbox_rs::daemon::start_threaded(cfg, opts) {
+        Ok(handle) => {
+            *guard = Some(EmbeddedDaemonState { handle, pidfile });
+            Ok(())
+        }
+        Err(e) => {
+            release_embedded_lock(pidfile);
+            Err(e)
+        }
+    }
+}
+
+#[cfg(feature = "embedded")]
+fn stop_embedded() -> Result<()> {
+    if let Some(cell) = EMBEDDED_DAEMON.get() {
+        let mut guard = cell.lock().unwrap();
+        if let Some(state) = guard.take() {
+            state.handle.stop()?;
+            release_embedded_lock(state.pidfile);
+        }
+    }
+    Ok(())
 }
 
 fn resolve_syftbox_binary(config: &SyftboxRuntimeConfig) -> Result<PathBuf> {
