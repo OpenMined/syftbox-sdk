@@ -214,3 +214,12 @@ submission/results/*
 
 **/.claude/*
 Cargo.lock
+
+# Repo tool
+.repo/
+.repo-bin/
+.repo-manifest/
+
+# Workspace symlinks (created by repo tool)
+/syft-crypto-core
+/syftbox

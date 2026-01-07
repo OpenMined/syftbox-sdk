@@ -1,7 +1,0 @@
-[submodule "syft-crypto-core"]
-	path = syft-crypto-core
-	url = https://github.com/OpenMined/syft-crypto-core.git
-
-[submodule "syftbox"]
-	path = syftbox
-	url = git@github.com:OpenMined/syftbox.git

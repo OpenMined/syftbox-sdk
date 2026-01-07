@@ -35,8 +35,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          submodules: recursive
           token: ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Setup workspace dependencies
+        run: |
+          chmod +x scripts/setup-workspace.sh
+          ./scripts/setup-workspace.sh
 
       - uses: actions/setup-python@v5
         with:
@@ -78,8 +82,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: main
-          submodules: recursive
           fetch-depth: 0
+
+      - name: Setup workspace dependencies
+        run: |
+          chmod +x scripts/setup-workspace.sh
+          ./scripts/setup-workspace.sh
 
       - name: Install protoc
         uses: arduino/setup-protoc@v2
@@ -138,8 +146,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: main
-          submodules: recursive
           fetch-depth: 0
+
+      - name: Setup workspace dependencies
+        shell: bash
+        run: |
+          chmod +x scripts/setup-workspace.sh
+          ./scripts/setup-workspace.sh
 
       - name: Install protoc
         uses: arduino/setup-protoc@v2
@@ -192,8 +205,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: main
-          submodules: recursive
           fetch-depth: 0
+
+      - name: Setup workspace dependencies
+        run: |
+          chmod +x scripts/setup-workspace.sh
+          ./scripts/setup-workspace.sh
 
       - name: Install protoc
         uses: arduino/setup-protoc@v2
@@ -221,8 +238,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: main
-          submodules: recursive
           fetch-depth: 0
+
+      - name: Setup workspace dependencies
+        run: |
+          chmod +x scripts/setup-workspace.sh
+          ./scripts/setup-workspace.sh
 
       - name: Install protoc
         uses: arduino/setup-protoc@v2
