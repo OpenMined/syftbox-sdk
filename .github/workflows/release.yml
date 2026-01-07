@@ -121,17 +121,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Linux builds natively (not in Docker) due to sibling path dependencies
-          # Uses manylinux_2_28 tag but builds on host for compatibility
+          # Linux builds use manylinux Docker with parent directory mounted
+          # for sibling dependencies (../syft-crypto-core, ../syftbox)
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            manylinux: off
-            container: off
+            manylinux: auto
             py-interpreter: "python3.13"
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
-            manylinux: off
-            container: off
+            manylinux: auto
             py-interpreter: "python3.13"
           # macOS and Windows build natively
           - os: macos-latest
@@ -183,7 +181,26 @@ jobs:
           args: --release --out dist --interpreter ${{ matrix.py-interpreter }}
           sccache: "true"
           manylinux: ${{ matrix.manylinux }}
-          container: ${{ matrix.container || '' }}
+          docker-options: -v ${{ github.workspace }}/..:/parent:ro
+          before-script-linux: |
+            # Install protoc in the manylinux container
+            PROTOC_VERSION="28.3"
+            ARCH="$(uname -m)"
+            if [ "$ARCH" = "aarch64" ]; then
+              PROTOC_ARCH="aarch_64"
+            else
+              PROTOC_ARCH="$ARCH"
+            fi
+            curl -LO "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-${PROTOC_ARCH}.zip"
+            unzip -q protoc-${PROTOC_VERSION}-linux-${PROTOC_ARCH}.zip -d /usr/local
+            rm protoc-${PROTOC_VERSION}-linux-${PROTOC_ARCH}.zip
+            protoc --version
+            # Create symlinks for sibling dependencies at root level
+            # Cargo.toml in /io references ../syft-crypto-core which resolves to /syft-crypto-core
+            echo "Setting up workspace dependencies in container..."
+            ln -sf /parent/syft-crypto-core /syft-crypto-core
+            ln -sf /parent/syftbox /syftbox
+            ls -la /syft-crypto-core /syftbox
 
       - name: Upload wheels
         uses: actions/upload-artifact@v4
