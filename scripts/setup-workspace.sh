@@ -20,7 +20,6 @@ echo "  REPO_ROOT: $REPO_ROOT"
 echo "  PARENT_DIR: $PARENT_DIR"
 
 # Configure git to use HTTPS instead of SSH for GitHub (needed for CI)
-# This rewrites git@github.com: URLs to https://github.com/
 git config --global url."https://github.com/".insteadOf "git@github.com:"
 
 # Check if we're in a repo-managed workspace (parent has .repo)
@@ -33,7 +32,6 @@ fi
 if [[ -d "$PARENT_DIR/syft-crypto-core" ]]; then
     echo "syft-crypto-core already exists at $PARENT_DIR/syft-crypto-core"
 elif [[ -L "$REPO_ROOT/syft-crypto-core" ]]; then
-    # Remove stale symlink if it exists
     echo "Removing stale syft-crypto-core symlink..."
     rm -f "$REPO_ROOT/syft-crypto-core"
     echo "Cloning syft-crypto-core to $PARENT_DIR/syft-crypto-core..."
@@ -47,7 +45,6 @@ fi
 if [[ -d "$PARENT_DIR/syftbox" ]]; then
     echo "syftbox already exists at $PARENT_DIR/syftbox"
 elif [[ -L "$REPO_ROOT/syftbox" ]]; then
-    # Remove stale symlink if it exists
     echo "Removing stale syftbox symlink..."
     rm -f "$REPO_ROOT/syftbox"
     echo "Cloning syftbox to $PARENT_DIR/syftbox..."
