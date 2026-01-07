@@ -228,6 +228,8 @@ jobs:
     name: Publish crate
     needs: [bump, test]
     runs-on: ubuntu-latest
+    # Skip until syftbox-rs is published to crates.io (required by embedded feature)
+    if: false
     steps:
       - uses: actions/checkout@v4
         with:
