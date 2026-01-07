@@ -178,7 +178,9 @@ jobs:
           args: --release --out dist --interpreter ${{ matrix.py-interpreter }}
           sccache: "true"
           manylinux: ${{ matrix.manylinux }}
+          docker-options: -v ${{ github.workspace }}/..:/parent:ro
           before-script-linux: |
+            # Install protoc
             PROTOC_VERSION="28.3"
             ARCH="$(uname -m)"
             if [ "$ARCH" = "aarch64" ]; then
@@ -190,6 +192,12 @@ jobs:
             unzip -q protoc-${PROTOC_VERSION}-linux-${PROTOC_ARCH}.zip -d /usr/local
             rm protoc-${PROTOC_VERSION}-linux-${PROTOC_ARCH}.zip
             protoc --version
+            # Setup sibling dependencies - Cargo.toml expects ../syft-crypto-core
+            # Container mounts repo at /io, parent workspace at /parent
+            echo "Setting up workspace dependencies in container..."
+            ln -sf /parent/syft-crypto-core /syft-crypto-core
+            ln -sf /parent/syftbox /syftbox
+            ls -la /syft-crypto-core /syftbox
 
       - name: Upload wheels
         uses: actions/upload-artifact@v4
