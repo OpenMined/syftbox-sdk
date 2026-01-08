@@ -12,6 +12,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const SYFTBOX_PIDFILE_NAME: &str = "syftbox.pid";
+#[cfg(feature = "embedded")]
 const SYFTBOX_EMBEDDED_PIDFILE_NAME: &str = "syftbox.embedded.pid";
 
 #[cfg(target_os = "windows")]

@@ -13,6 +13,7 @@ process = []
 auth = ["reqwest", "tokio"]
 embedded = ["dep:syftbox-rs"]
 test-plaintext = []
+telemetry = ["opentelemetry", "tracing-opentelemetry"]
 
 [dependencies]
 anyhow = "1.0"
@@ -22,6 +23,8 @@ dirs = "5.0"
 walkdir = "2.4"
 thiserror = "1.0"
 tracing = "0.1"
+opentelemetry = { version = "0.27", optional = true }
+tracing-opentelemetry = { version = "0.28", optional = true }
 tokio = { version = "1.40", features = ["macros", "rt"], optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"], optional = true }
 base64 = "0.22"

@@ -3,8 +3,10 @@ use crate::syftbox::endpoint::Endpoint;
 use crate::syftbox::types::{RpcRequest, RpcResponse};
 use anyhow::Result;
 use std::path::{Path, PathBuf};
+use tracing::instrument;
 
 /// Check for requests across all endpoints of an app
+#[instrument(skip(app), fields(component = "rpc", app_email = %app.email), err)]
 pub fn check_all_requests(app: &SyftBoxApp) -> Result<Vec<(String, PathBuf, RpcRequest)>> {
     let mut all_requests = Vec::new();
 
@@ -22,12 +24,19 @@ pub fn check_all_requests(app: &SyftBoxApp) -> Result<Vec<(String, PathBuf, RpcR
 }
 
 /// Check for requests on a specific endpoint
+#[instrument(skip(app), fields(component = "rpc", endpoint = %endpoint_name), err)]
 pub fn check_requests(app: &SyftBoxApp, endpoint_name: &str) -> Result<Vec<(PathBuf, RpcRequest)>> {
     let endpoint = Endpoint::new(app, endpoint_name)?;
     endpoint.check_requests()
 }
 
 /// Send a response to a request
+#[instrument(skip(app, request, response), fields(
+    component = "rpc",
+    endpoint = %endpoint_name,
+    request_id = %request.id,
+    status = %response.status_code
+), err)]
 pub fn send_response(
     app: &SyftBoxApp,
     endpoint_name: &str,
@@ -41,6 +50,13 @@ pub fn send_response(
 }
 
 /// Create and send a request to another datasite
+#[instrument(skip(app, request), fields(
+    component = "rpc",
+    endpoint = %endpoint_name,
+    request_id = %request.id,
+    method = %request.method,
+    recipient = %request.url
+), err)]
 pub fn send_request(
     app: &SyftBoxApp,
     endpoint_name: &str,
@@ -51,6 +67,7 @@ pub fn send_request(
 }
 
 /// Check for responses to requests we've sent
+#[instrument(skip(app), fields(component = "rpc", endpoint = %endpoint_name), err)]
 pub fn check_responses(
     app: &SyftBoxApp,
     endpoint_name: &str,
@@ -60,6 +77,12 @@ pub fn check_responses(
 }
 
 /// Helper to process a request and automatically send a response
+#[instrument(skip(app, request, handler), fields(
+    component = "rpc",
+    endpoint = %endpoint_name,
+    request_id = %request.id,
+    method = %request.method
+), err)]
 pub fn process_request<F>(
     app: &SyftBoxApp,
     endpoint_name: &str,

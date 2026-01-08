@@ -8,6 +8,12 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
 
+/// W3C Trace Context header name
+pub const TRACEPARENT_HEADER: &str = "traceparent";
+
+/// Component identifier for span tagging
+pub const COMPONENT_ATTR: &str = "component";
+
 /// RPC Request structure matching the SyftBox format
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RpcRequest {
@@ -171,6 +177,113 @@ impl RpcHeaders {
 impl From<HashMap<String, String>> for RpcHeaders {
     fn from(map: HashMap<String, String>) -> Self {
         Self(map)
+    }
+}
+
+impl RpcRequest {
+    /// Get the traceparent header if present (for distributed tracing)
+    pub fn traceparent(&self) -> Option<&String> {
+        self.headers.get(TRACEPARENT_HEADER)
+    }
+
+    /// Set the traceparent header for distributed tracing
+    pub fn set_traceparent(&mut self, traceparent: String) {
+        self.headers
+            .insert(TRACEPARENT_HEADER.to_string(), traceparent);
+    }
+}
+
+impl RpcResponse {
+    /// Get the traceparent header if present (for distributed tracing)
+    pub fn traceparent(&self) -> Option<&String> {
+        self.headers.get(TRACEPARENT_HEADER)
+    }
+
+    /// Set the traceparent header for distributed tracing
+    pub fn set_traceparent(&mut self, traceparent: String) {
+        self.headers
+            .insert(TRACEPARENT_HEADER.to_string(), traceparent);
+    }
+}
+
+/// Trait for injecting trace context into RPC messages
+#[cfg(feature = "telemetry")]
+pub mod trace_context {
+    use super::*;
+    use opentelemetry::trace::{SpanContext, TraceContextExt};
+    use tracing_opentelemetry::OpenTelemetrySpanExt;
+
+    /// Inject current trace context into an RpcRequest
+    pub fn inject_trace_context(request: &mut RpcRequest) {
+        let current_span = tracing::Span::current();
+        let context = current_span.context();
+        let span_ref = context.span();
+        let span_context = span_ref.span_context();
+
+        if span_context.is_valid() {
+            let traceparent = format_traceparent(span_context);
+            request.set_traceparent(traceparent);
+        }
+    }
+
+    /// Inject current trace context into an RpcResponse
+    pub fn inject_trace_context_response(response: &mut RpcResponse) {
+        let current_span = tracing::Span::current();
+        let context = current_span.context();
+        let span_ref = context.span();
+        let span_context = span_ref.span_context();
+
+        if span_context.is_valid() {
+            let traceparent = format_traceparent(span_context);
+            response.set_traceparent(traceparent);
+        }
+    }
+
+    /// Format a SpanContext as W3C traceparent header
+    fn format_traceparent(ctx: &SpanContext) -> String {
+        format!(
+            "00-{}-{}-{:02x}",
+            ctx.trace_id(),
+            ctx.span_id(),
+            ctx.trace_flags().to_u8()
+        )
+    }
+
+    /// Parse a traceparent header and create a linked span
+    /// Returns (trace_id, span_id, trace_flags) if valid
+    pub fn parse_traceparent(traceparent: &str) -> Option<(String, String, u8)> {
+        let parts: Vec<&str> = traceparent.split('-').collect();
+        if parts.len() != 4 || parts[0] != "00" {
+            return None;
+        }
+
+        let trace_id = parts[1].to_string();
+        let span_id = parts[2].to_string();
+        let flags = u8::from_str_radix(parts[3], 16).ok()?;
+
+        // Validate lengths
+        if trace_id.len() != 32 || span_id.len() != 16 {
+            return None;
+        }
+
+        Some((trace_id, span_id, flags))
+    }
+
+    /// Log trace context for debugging
+    pub fn log_trace_context(prefix: &str) {
+        let current_span = tracing::Span::current();
+        let context = current_span.context();
+        let span_ref = context.span();
+        let span_context = span_ref.span_context();
+
+        if span_context.is_valid() {
+            tracing::debug!(
+                "{}: trace_id={}, span_id={}",
+                prefix,
+                span_context.trace_id(),
+                span_context.span_id()
+            );
+        }
     }
 }
 

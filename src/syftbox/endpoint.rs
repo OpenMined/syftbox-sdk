@@ -3,6 +3,7 @@ use crate::syftbox::storage::WritePolicy;
 use crate::syftbox::types::{RpcRequest, RpcResponse};
 use anyhow::{anyhow, bail, Context, Result};
 use std::path::{Path, PathBuf};
+use tracing::instrument;
 
 /// Request with its file path
 pub type RequestWithPath = (PathBuf, RpcRequest);
@@ -19,6 +20,7 @@ pub struct Endpoint {
 
 impl Endpoint {
     /// Create a new endpoint for a SyftBox app
+    #[instrument(skip(app), fields(component = "rpc", endpoint = %name), err)]
     pub fn new(app: &SyftBoxApp, name: &str) -> Result<Self> {
         let path = app.register_endpoint(name)?;
 
@@ -31,6 +33,7 @@ impl Endpoint {
 
     /// Check for request files in this endpoint (your own folder only)
     /// Requests are written by others TO you in datasites/your-email/app_data/<app>/rpc/<endpoint>/
+    #[instrument(skip(self), fields(component = "rpc", endpoint = %self.name), err)]
     pub fn check_requests(&self) -> Result<Vec<(PathBuf, RpcRequest)>> {
         // Only check your own endpoint folder - this is where others write requests TO you
         self.check_requests_in_folder(&self.path)
@@ -38,6 +41,7 @@ impl Endpoint {
 
     /// Check for request files and return both successes and failures
     /// Returns (successful_requests, failed_requests)
+    #[instrument(skip(self), fields(component = "rpc", endpoint = %self.name), err)]
     pub fn check_requests_with_failures(
         &self,
     ) -> Result<(Vec<RequestWithPath>, Vec<FailedRequest>)> {
@@ -109,6 +113,12 @@ impl Endpoint {
     }
 
     /// Send a response for a request
+    #[instrument(skip(self, request, response), fields(
+        component = "rpc",
+        endpoint = %self.name,
+        request_id = %request.id,
+        status = %response.status_code
+    ), err)]
     pub fn send_response(
         &self,
         request_path: &Path,
@@ -160,6 +170,13 @@ impl Endpoint {
     }
 
     /// Create a request file (for sending requests to others)
+    #[instrument(skip(self, request), fields(
+        component = "rpc",
+        endpoint = %self.name,
+        request_id = %request.id,
+        method = %request.method,
+        recipient = %request.url
+    ), err)]
     pub fn create_request(&self, request: &RpcRequest) -> Result<PathBuf> {
         let request_filename = format!("{}.request", request.id);
         let request_path = self.path.join(request_filename);
@@ -183,6 +200,7 @@ impl Endpoint {
     /// Check for response files (when we sent a request and are waiting for response)
     /// Responses are in OTHER identity folders (where you wrote requests), NOT your own folder
     /// You write requests to datasites/their-email/, they write responses back there
+    #[instrument(skip(self), fields(component = "rpc", endpoint = %self.name), err)]
     pub fn check_responses(&self) -> Result<Vec<(PathBuf, RpcResponse)>> {
         let mut responses = Vec::new();
 
@@ -294,6 +312,7 @@ impl Endpoint {
     }
 
     /// Clean up a response file after processing
+    #[instrument(skip(self), fields(component = "rpc", endpoint = %self.name), err)]
     pub fn cleanup_response(&self, response_path: &Path) -> Result<()> {
         self.app.storage.remove_path(response_path)?;
         Ok(())

@@ -25,7 +25,10 @@ pub use syftbox::syc::{
     provision_local_identity_with_options, resolve_identity, restore_identity_from_mnemonic,
     IdentityProvisioningOutcome,
 };
-pub use syftbox::types::{RpcHeaders, RpcRequest, RpcResponse};
+pub use syftbox::types::{RpcHeaders, RpcRequest, RpcResponse, COMPONENT_ATTR, TRACEPARENT_HEADER};
+
+#[cfg(feature = "telemetry")]
+pub use syftbox::types::trace_context;
 
 #[cfg(feature = "auth")]
 pub use syftbox::auth::{request_otp, verify_otp, OtpRequestPayload, OtpTokens, OtpVerifyOutcome};

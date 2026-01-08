@@ -10,7 +10,7 @@ use syft_crypto_protocol::datasite::{
     bytes::{read_bytes, write_bytes, BytesReadOpts, BytesWriteOpts, BytesWriteOutcome},
     context::{ensure_vault_layout, resolve_vault, AppContext},
 };
-use tracing::warn;
+use tracing::{instrument, warn};
 use walkdir::WalkDir;
 
 /// Result from read_with_shadow when metadata is requested
@@ -143,6 +143,7 @@ impl SyftBoxStorage {
     /// Write encrypted file using shadow folder pattern:
     /// 1. Write plaintext to shadow folder
     /// 2. Encrypt from shadow → datasites
+    #[instrument(skip(self, data), fields(component = "storage", size = data.len(), encrypted = true), err)]
     pub fn write_encrypted_with_shadow(
         &self,
         datasite_path: &Path,
@@ -218,6 +219,7 @@ impl SyftBoxStorage {
     /// Read encrypted file using shadow folder pattern:
     /// 1. Decrypt from datasites → shadow
     /// 2. Read plaintext from shadow
+    #[instrument(skip(self), fields(component = "storage"), err)]
     pub fn read_with_shadow(&self, datasite_path: &Path) -> Result<Vec<u8>> {
         match &self.backend {
             StorageBackend::SyctCrypto(backend) => {
@@ -322,6 +324,7 @@ impl SyftBoxStorage {
 
     /// Read encrypted file using shadow folder pattern, returning metadata about the sender.
     /// This is the same as read_with_shadow but also returns verified sender identity.
+    #[instrument(skip(self), fields(component = "storage"), err)]
     pub fn read_with_shadow_metadata(&self, datasite_path: &Path) -> Result<ReadWithShadowResult> {
         match &self.backend {
             StorageBackend::SyctCrypto(backend) => {
@@ -416,6 +419,7 @@ impl SyftBoxStorage {
 
     /// Write with shadow folder pattern - creates both encrypted file and plaintext shadow
     /// This makes unencrypted/ a true mirror of datasites/
+    #[instrument(skip(self, plaintext), fields(component = "storage", size = plaintext.len()), err)]
     pub fn write_with_shadow(
         &self,
         absolute_path: &Path,
