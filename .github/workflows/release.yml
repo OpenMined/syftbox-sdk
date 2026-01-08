@@ -182,7 +182,7 @@ jobs:
           args: --release --out dist --interpreter ${{ matrix.py-interpreter }}
           sccache: "true"
           manylinux: ${{ matrix.manylinux }}
-          docker-options: -v ${{ github.workspace }}/..:/parent:ro
+          docker-options: -v ${{ github.workspace }}/../syft-crypto-core:${{ github.workspace }}/../syft-crypto-core:ro -v ${{ github.workspace }}/../syftbox:${{ github.workspace }}/../syftbox:ro
           before-script-linux: |
             # Install protoc in the manylinux container
             PROTOC_VERSION="28.3"
@@ -196,12 +196,6 @@ jobs:
             unzip -q protoc-${PROTOC_VERSION}-linux-${PROTOC_ARCH}.zip -d /usr/local
             rm protoc-${PROTOC_VERSION}-linux-${PROTOC_ARCH}.zip
             protoc --version
-            # Create symlinks for sibling dependencies at root level
-            # Cargo.toml in /io references ../syft-crypto-core which resolves to /syft-crypto-core
-            echo "Setting up workspace dependencies in container..."
-            ln -sf /parent/syft-crypto-core /syft-crypto-core
-            ln -sf /parent/syftbox /syftbox
-            ls -la /syft-crypto-core /syftbox
 
       - name: Upload wheels
         uses: actions/upload-artifact@v4
