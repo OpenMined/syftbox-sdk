@@ -1,4 +1,4 @@
-use crate::syftbox::storage::SyftBoxStorage;
+use crate::syftbox::storage::{SyftBoxStorage, SyftStorageConfig};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_yaml;
@@ -75,6 +75,16 @@ struct RuleSet {
 impl SyftBoxApp {
     /// Create a new SyftBox app, ensuring all necessary directories and files exist
     pub fn new(data_dir: &Path, email: &str, app_name: &str) -> Result<Self> {
+        Self::with_vault_path(data_dir, email, app_name, None)
+    }
+
+    /// Create a new SyftBox app with an explicit vault path override
+    pub fn with_vault_path(
+        data_dir: &Path,
+        email: &str,
+        app_name: &str,
+        vault_path: Option<&Path>,
+    ) -> Result<Self> {
         let app_data_dir = data_dir
             .join("datasites")
             .join(email)
@@ -83,7 +93,13 @@ impl SyftBoxApp {
 
         let rpc_dir = app_data_dir.join("rpc");
 
-        let storage = SyftBoxStorage::new(data_dir);
+        let storage = SyftBoxStorage::with_config(
+            data_dir,
+            &SyftStorageConfig {
+                vault_path: vault_path.map(|p| p.to_path_buf()),
+                ..Default::default()
+            },
+        );
 
         let app = Self {
             app_name: app_name.to_string(),
