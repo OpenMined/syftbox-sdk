@@ -1,4 +1,6 @@
 #![cfg(feature = "embedded")]
+// NOTE: These tests share the BV_SYFTBOX_BACKEND env var and the embedded daemon singleton.
+// They MUST be run with `--test-threads=1` to avoid race conditions.
 
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -47,7 +49,7 @@ impl FakeHttpServer {
                             .and_then(|l| l.split_whitespace().nth(1))
                             .unwrap_or("/");
 
-                        let (status, body) = if path == "/healthz" {
+                        let (status, body) = if path == "/healthz" || path == "/v1/status" {
                             ("200 OK", "ok")
                         } else {
                             ("404 Not Found", "not found")
@@ -141,6 +143,124 @@ fn embedded_backend_starts_and_stops() {
             Duration::from_secs(2)
         ),
         "expected control plane to become reachable"
+    );
+
+    assert!(stop_syftbox(&runtime).unwrap());
+    assert!(
+        wait_until(
+            || !is_syftbox_running(&runtime).unwrap_or(true),
+            Duration::from_secs(2)
+        ),
+        "expected control plane to stop"
+    );
+}
+
+#[test]
+fn embedded_backend_works_with_localhost_client_url() {
+    let server = FakeHttpServer::start();
+    let tmp = tempfile::tempdir().unwrap();
+    let data_dir = tmp.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+
+    let cp_port = pick_free_port();
+    // Use "localhost" instead of "127.0.0.1" to test hostname resolution
+    let client_url = format!("http://localhost:{cp_port}");
+    let cfg_path = tmp.path().join("config.json");
+    let data_dir_str = data_dir.display().to_string().replace('\\', "/");
+    std::fs::write(
+        &cfg_path,
+        format!(
+            r#"{{
+  "data_dir": "{}",
+  "email": "alice@example.com",
+  "server_url": "{}",
+  "client_url": "{}",
+  "client_token": ""
+}}"#,
+            data_dir_str,
+            server.url(),
+            client_url
+        ),
+    )
+    .unwrap();
+
+    std::env::set_var("BV_SYFTBOX_BACKEND", "embedded");
+
+    let runtime =
+        SyftboxRuntimeConfig::new("alice@example.com", cfg_path.clone(), data_dir.clone());
+
+    assert!(
+        start_syftbox(&runtime).unwrap(),
+        "embedded backend should start with localhost client_url"
+    );
+    assert!(
+        wait_until(
+            || is_syftbox_running(&runtime).unwrap_or(false),
+            Duration::from_secs(2)
+        ),
+        "control plane should become reachable even with localhost in client_url"
+    );
+
+    assert!(stop_syftbox(&runtime).unwrap());
+    assert!(
+        wait_until(
+            || !is_syftbox_running(&runtime).unwrap_or(true),
+            Duration::from_secs(2)
+        ),
+        "expected control plane to stop"
+    );
+}
+
+#[test]
+fn embedded_backend_falls_back_to_random_port_when_configured_port_busy() {
+    let server = FakeHttpServer::start();
+    let tmp = tempfile::tempdir().unwrap();
+    let data_dir = tmp.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+
+    // Occupy a port with a listener to simulate port conflict
+    let blocker_port = pick_free_port();
+    let _blocker = TcpListener::bind(("127.0.0.1", blocker_port)).unwrap();
+
+    // Configure the daemon to use the occupied port
+    let client_url = format!("http://127.0.0.1:{blocker_port}");
+    let cfg_path = tmp.path().join("config.json");
+    let data_dir_str = data_dir.display().to_string().replace('\\', "/");
+    std::fs::write(
+        &cfg_path,
+        format!(
+            r#"{{
+  "data_dir": "{}",
+  "email": "alice@example.com",
+  "server_url": "{}",
+  "client_url": "{}",
+  "client_token": ""
+}}"#,
+            data_dir_str,
+            server.url(),
+            client_url
+        ),
+    )
+    .unwrap();
+
+    std::env::set_var("BV_SYFTBOX_BACKEND", "embedded");
+
+    let runtime =
+        SyftboxRuntimeConfig::new("alice@example.com", cfg_path.clone(), data_dir.clone());
+
+    // Should start successfully by falling back to a different port
+    assert!(
+        start_syftbox(&runtime).unwrap(),
+        "embedded backend should start even when configured port is busy (by falling back)"
+    );
+
+    // Verify it's running (on whatever port it found)
+    assert!(
+        wait_until(
+            || is_syftbox_running(&runtime).unwrap_or(false),
+            Duration::from_secs(5)
+        ),
+        "control plane should become reachable on fallback port"
     );
 
     assert!(stop_syftbox(&runtime).unwrap());

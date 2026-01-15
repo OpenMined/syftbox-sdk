@@ -15,6 +15,29 @@ const SYFTBOX_PIDFILE_NAME: &str = "syftbox.pid";
 #[cfg(feature = "embedded")]
 const SYFTBOX_EMBEDDED_PIDFILE_NAME: &str = "syftbox.embedded.pid";
 
+// ============================================================================
+// LOGGING HELPERS
+// ============================================================================
+// All embedded syftbox operations are logged to help debug startup issues.
+// Logs go to stderr so they appear in desktop.log via the Tauri process.
+
+fn log_embedded(level: &str, msg: &str) {
+    let ts = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ");
+    eprintln!("[{}][SYFTBOX-SDK][{}] {}", ts, level, msg);
+}
+
+fn log_info(msg: &str) {
+    log_embedded("INFO", msg);
+}
+
+fn log_warn(msg: &str) {
+    log_embedded("WARN", msg);
+}
+
+fn log_error(msg: &str) {
+    log_embedded("ERROR", msg);
+}
+
 #[cfg(target_os = "windows")]
 fn hide_console_window(cmd: &mut Command) {
     use std::os::windows::process::CommandExt;
@@ -39,7 +62,7 @@ fn use_embedded_backend() -> bool {
 #[cfg(feature = "embedded")]
 struct EmbeddedDaemonState {
     handle: syftbox_rs::daemon::ThreadedDaemonHandle,
-    pidfile: PathBuf,
+    workspace_lock: EmbeddedWorkspaceLock,
 }
 
 #[cfg(feature = "embedded")]
@@ -78,21 +101,49 @@ pub fn is_syftbox_running(config: &SyftboxRuntimeConfig) -> Result<bool> {
 
 pub fn start_syftbox(config: &SyftboxRuntimeConfig) -> Result<bool> {
     if use_embedded_backend() {
+        log_info("Starting SyftBox with embedded backend");
+
         // Treat embedded as Direct mode: no external process to inspect.
         if is_running_with_mode(config, SyftBoxMode::Direct)? {
+            log_info("SyftBox is already running (control plane responsive), skipping startup");
             return Ok(false);
         }
+
+        log_info("SyftBox not currently running, starting embedded daemon...");
 
         #[cfg(feature = "embedded")]
         start_embedded(config)?;
 
+        log_info("Waiting for control plane to become responsive (timeout: 10s)...");
+        let start_time = Instant::now();
         if !wait_for(
             || is_running_with_mode(config, SyftBoxMode::Direct),
             true,
-            Duration::from_secs(5),
+            Duration::from_secs(10), // Increased from 5s to 10s for robustness
         )? {
-            return Err(anyhow!("SyftBox did not start in time"));
+            let elapsed = start_time.elapsed();
+            log_error(&format!(
+                "SyftBox control plane did not become responsive within {:?}. \
+                 Check {} for daemon logs.",
+                elapsed,
+                config
+                    .config_path
+                    .parent()
+                    .unwrap_or(config.config_path.as_path())
+                    .join("logs/syftbox.log")
+                    .display()
+            ));
+            return Err(anyhow!(
+                "SyftBox did not start in time (waited {:?}). Check logs for details.",
+                elapsed
+            ));
         }
+
+        let elapsed = start_time.elapsed();
+        log_info(&format!(
+            "SyftBox embedded daemon started successfully (took {:?})",
+            elapsed
+        ));
 
         return Ok(true);
     }
@@ -337,7 +388,15 @@ fn is_running_with_mode(config: &SyftboxRuntimeConfig, mode: SyftBoxMode) -> Res
     if use_embedded_backend() {
         let _ = mode;
         let client_url = resolve_client_url(config);
-        return Ok(probe_client_url(&client_url));
+        let is_running = probe_client_url(&client_url);
+        // Debug: log what we're probing (only when checking, not spamming)
+        if !is_running {
+            log_info(&format!(
+                "Probing control plane at {} - not responding",
+                client_url
+            ));
+        }
+        return Ok(is_running);
     }
 
     #[cfg(unix)]
@@ -452,24 +511,54 @@ fn running_pids(config: &SyftboxRuntimeConfig, mode: SyftBoxMode) -> Result<Vec<
     }
 }
 
+/// Check if a SyftBox control plane is actually running at the given URL.
+///
+/// This does an HTTP GET to /v1/status to verify it's actually a SyftBox control plane,
+/// not just any service listening on that port.
 fn probe_client_url(client_url: &str) -> bool {
     let (host, port) = match parse_host_port(client_url) {
         Some(v) => v,
         None => ("127.0.0.1".to_string(), 7938),
     };
 
-    let host = if host.eq_ignore_ascii_case("localhost") {
-        "127.0.0.1".to_string()
-    } else {
-        host
-    };
+    let host = normalize_host_for_socket_addr(&host);
 
     let addr: SocketAddr = match format!("{host}:{port}").parse() {
         Ok(a) => a,
         Err(_) => return false,
     };
 
-    TcpStream::connect_timeout(&addr, Duration::from_millis(250)).is_ok()
+    // First check TCP connectivity
+    let stream = match TcpStream::connect_timeout(&addr, Duration::from_millis(500)) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+
+    // Set timeouts for the HTTP request
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
+
+    // Make a simple HTTP GET request to /v1/status
+    use std::io::{BufRead, BufReader, Write};
+    let mut stream = stream;
+    let request = format!(
+        "GET /v1/status HTTP/1.1\r\nHost: {}:{}\r\nConnection: close\r\n\r\n",
+        host, port
+    );
+
+    if stream.write_all(request.as_bytes()).is_err() {
+        return false;
+    }
+
+    // Read the response - we just need to check for HTTP 200 OK
+    let mut reader = BufReader::new(stream);
+    let mut status_line = String::new();
+    if reader.read_line(&mut status_line).is_err() {
+        return false;
+    }
+
+    // Check if response is HTTP 200 (SyftBox control plane responds with 200 to /v1/status)
+    status_line.contains("200")
 }
 
 fn parse_host_port(url: &str) -> Option<(String, u16)> {
@@ -485,6 +574,22 @@ fn parse_host_port(url: &str) -> Option<(String, u16)> {
         return None;
     }
     Some((host, port))
+}
+
+/// Converts hostnames that cannot be parsed by `SocketAddr::parse()` to numeric IPs.
+///
+/// `SocketAddr::parse()` only accepts numeric IP addresses (e.g., "127.0.0.1:7938"),
+/// NOT hostnames like "localhost:7938". This function normalizes common hostnames
+/// to their numeric equivalents so they can be used with socket APIs.
+///
+/// If the host is not a recognized hostname, it is returned unchanged (allowing
+/// numeric IPs to pass through, or causing a later parse failure for truly invalid hosts).
+fn normalize_host_for_socket_addr(host: &str) -> String {
+    if host.eq_ignore_ascii_case("localhost") {
+        "127.0.0.1".to_string()
+    } else {
+        host.to_string()
+    }
 }
 
 fn resolve_client_url(config: &SyftboxRuntimeConfig) -> String {
@@ -529,41 +634,303 @@ fn is_pid_running(pid: u32) -> bool {
     }
 }
 
+/// Check if a SyftBox control plane at the given URL is responsive.
+///
+/// This verifies the endpoint is actually a SyftBox control plane by hitting /v1/status,
+/// not just checking TCP connectivity. This prevents false positives when another service
+/// is using the port.
 #[cfg(feature = "embedded")]
-fn ensure_embedded_lock(config: &SyftboxRuntimeConfig) -> Result<PathBuf> {
-    let pidfile = embedded_pidfile_path(config);
-    if let Ok(pid_str) = fs::read_to_string(&pidfile) {
-        if let Ok(pid) = pid_str.trim().parse::<u32>() {
-            let current = std::process::id();
-            if pid != current && is_pid_running(pid) {
-                return Err(anyhow!(
-                    "Another BioVault instance (pid {}) is already using {}",
-                    pid,
-                    config.data_dir.display()
-                ));
-            }
+fn is_control_plane_responsive(client_url: &str, timeout: Duration) -> bool {
+    let (host, port) = match parse_host_port(client_url) {
+        Some(v) => v,
+        None => return false,
+    };
+
+    let host = normalize_host_for_socket_addr(&host);
+    let addr: SocketAddr = match format!("{host}:{port}").parse() {
+        Ok(a) => a,
+        Err(_) => return false,
+    };
+
+    // Connect with provided timeout
+    let stream = match TcpStream::connect_timeout(&addr, timeout) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+
+    // Set timeouts for the HTTP exchange
+    let half_timeout = Duration::from_millis(timeout.as_millis() as u64 / 2);
+    let _ = stream.set_read_timeout(Some(half_timeout));
+    let _ = stream.set_write_timeout(Some(half_timeout));
+
+    // Make HTTP GET to /v1/status to verify it's actually a SyftBox control plane
+    use std::io::{BufRead, BufReader, Write};
+    let mut stream = stream;
+    let request = format!(
+        "GET /v1/status HTTP/1.1\r\nHost: {}:{}\r\nConnection: close\r\n\r\n",
+        host, port
+    );
+
+    if stream.write_all(request.as_bytes()).is_err() {
+        return false;
+    }
+
+    let mut reader = BufReader::new(stream);
+    let mut status_line = String::new();
+    if reader.read_line(&mut status_line).is_err() {
+        return false;
+    }
+
+    status_line.contains("200")
+}
+
+/// Kill a process by PID.
+#[cfg(feature = "embedded")]
+fn kill_process(pid: u32) -> Result<()> {
+    log_info(&format!("Attempting to kill stale process (pid={})", pid));
+
+    #[cfg(target_os = "windows")]
+    {
+        let status = Command::new("taskkill")
+            .args(["/F", "/PID", &pid.to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .with_context(|| format!("Failed to execute taskkill for pid {}", pid))?;
+
+        if status.success() {
+            log_info(&format!("Successfully killed process (pid={})", pid));
+            Ok(())
+        } else {
+            Err(anyhow!(
+                "taskkill failed for pid {} (status: {:?})",
+                pid,
+                status.code()
+            ))
         }
     }
 
-    if let Some(parent) = pidfile.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("Failed to create {}", parent.display()))?;
-    }
-    fs::write(&pidfile, format!("{}\n", std::process::id()))
-        .with_context(|| format!("Failed to write {}", pidfile.display()))?;
+    #[cfg(not(target_os = "windows"))]
+    {
+        // First try SIGTERM (graceful)
+        let status = Command::new("kill")
+            .args(["-15", &pid.to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .with_context(|| format!("Failed to execute kill -15 for pid {}", pid))?;
 
-    Ok(pidfile)
+        if status.success() {
+            // Wait a bit for graceful shutdown
+            thread::sleep(Duration::from_millis(500));
+
+            // Check if still running, if so use SIGKILL
+            if is_pid_running(pid) {
+                log_warn(&format!(
+                    "Process {} still running after SIGTERM, sending SIGKILL",
+                    pid
+                ));
+                let _ = Command::new("kill")
+                    .args(["-9", &pid.to_string()])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+                thread::sleep(Duration::from_millis(200));
+            }
+        }
+
+        if is_pid_running(pid) {
+            Err(anyhow!("Failed to kill process {} - still running", pid))
+        } else {
+            log_info(&format!("Successfully killed process (pid={})", pid));
+            Ok(())
+        }
+    }
+}
+
+/// Holds the workspace lock to prevent concurrent access to the data_dir.
+#[cfg(feature = "embedded")]
+struct EmbeddedWorkspaceLock {
+    #[allow(dead_code)]
+    lock: syftbox_rs::workspace::WorkspaceLock,
+    pidfile: PathBuf,
+}
+
+/// Ensure we have exclusive access to run the embedded daemon for this data_dir.
+///
+/// This function uses a two-layer locking strategy:
+/// 1. **flock-based WorkspaceLock**: Kernel-level exclusive lock on data_dir/.data/syftbox.lock
+///    - Automatically released on process exit/crash (kernel handles this)
+///    - Prevents any concurrent access, even from processes we don't know about
+/// 2. **PID file**: Records our PID for diagnostics and stale process detection
+///    - Allows us to identify and kill stale processes that didn't clean up properly
+///
+/// Flow:
+/// 1. Try to acquire flock on workspace
+/// 2. If flock fails, another process has it - check if that process is healthy
+/// 3. If healthy, error out (can't have two)
+/// 4. If stale/unresponsive, kill it and retry
+/// 5. Write our PID to pidfile
+#[cfg(feature = "embedded")]
+fn ensure_embedded_lock(config: &SyftboxRuntimeConfig) -> Result<EmbeddedWorkspaceLock> {
+    let pidfile = embedded_pidfile_path(config);
+    let current_pid = std::process::id();
+
+    log_info(&format!(
+        "Acquiring workspace lock: data_dir={}, current_pid={}",
+        config.data_dir.display(),
+        current_pid
+    ));
+
+    // First, try to acquire the flock-based workspace lock
+    match syftbox_rs::workspace::WorkspaceLock::try_lock(&config.data_dir) {
+        Ok(lock) => {
+            log_info("Workspace lock acquired successfully (flock)");
+
+            // Clean up any stale pidfile and write our PID
+            if let Some(parent) = pidfile.parent() {
+                fs::create_dir_all(parent).with_context(|| {
+                    format!("Failed to create pidfile directory: {}", parent.display())
+                })?;
+            }
+            fs::write(&pidfile, format!("{}\n", current_pid))
+                .with_context(|| format!("Failed to write pidfile: {}", pidfile.display()))?;
+
+            log_info(&format!(
+                "Wrote pidfile: path={}, pid={}",
+                pidfile.display(),
+                current_pid
+            ));
+
+            Ok(EmbeddedWorkspaceLock { lock, pidfile })
+        }
+        Err(e) => {
+            // Lock acquisition failed - check if it's a "locked" error
+            let is_locked = e.chain().any(|cause| {
+                cause
+                    .downcast_ref::<syftbox_rs::workspace::WorkspaceLockedError>()
+                    .is_some()
+            });
+
+            if !is_locked {
+                // Some other error (permissions, disk full, etc.)
+                log_error(&format!("Failed to acquire workspace lock: {}", e));
+                return Err(e);
+            }
+
+            log_warn("Workspace is locked by another process, investigating...");
+
+            // Read pidfile to find the other process
+            let existing_pid = fs::read_to_string(&pidfile)
+                .ok()
+                .and_then(|s| s.trim().parse::<u32>().ok());
+
+            if let Some(pid) = existing_pid {
+                log_info(&format!("Found pidfile with pid={}", pid));
+
+                // Check if that process is healthy
+                let client_url =
+                    crate::syftbox::config::SyftBoxConfigFile::load(&config.config_path)
+                        .ok()
+                        .and_then(|c| c.client_url)
+                        .unwrap_or_else(|| "http://127.0.0.1:7938".to_string());
+
+                if is_control_plane_responsive(&client_url, Duration::from_secs(2)) {
+                    log_error(&format!(
+                        "Cannot start: another instance (pid={}) is running and healthy for data_dir={}",
+                        pid,
+                        config.data_dir.display()
+                    ));
+                    return Err(anyhow!(
+                        "Another BioVault instance (pid {}) is already running for {}. \
+                         The control plane is responsive at {}.",
+                        pid,
+                        config.data_dir.display(),
+                        client_url
+                    ));
+                }
+
+                // Not responsive - try to kill it
+                log_warn(&format!(
+                    "Existing process (pid={}) is not responsive, attempting to kill...",
+                    pid
+                ));
+
+                if let Err(kill_err) = kill_process(pid) {
+                    log_error(&format!(
+                        "Failed to kill stale process (pid={}): {}",
+                        pid, kill_err
+                    ));
+                    return Err(anyhow!(
+                        "Workspace is locked by stale process (pid {}), failed to kill: {}",
+                        pid,
+                        kill_err
+                    ));
+                }
+
+                log_info(&format!("Killed stale process (pid={})", pid));
+
+                // Wait for lock to be released
+                thread::sleep(Duration::from_millis(500));
+
+                // Retry acquiring the lock
+                log_info("Retrying workspace lock acquisition...");
+                match syftbox_rs::workspace::WorkspaceLock::try_lock(&config.data_dir) {
+                    Ok(lock) => {
+                        log_info("Workspace lock acquired on retry");
+                        fs::write(&pidfile, format!("{}\n", current_pid)).with_context(|| {
+                            format!("Failed to write pidfile: {}", pidfile.display())
+                        })?;
+                        Ok(EmbeddedWorkspaceLock { lock, pidfile })
+                    }
+                    Err(retry_err) => {
+                        log_error(&format!(
+                            "Failed to acquire lock after killing stale process: {}",
+                            retry_err
+                        ));
+                        Err(retry_err)
+                    }
+                }
+            } else {
+                // No pidfile, but workspace is locked - something weird
+                log_error("Workspace locked but no pidfile found - cannot identify holder");
+                Err(anyhow!(
+                    "Workspace at {} is locked by an unknown process (no pidfile). \
+                     Try removing {}/.data/syftbox.lock manually.",
+                    config.data_dir.display(),
+                    config.data_dir.display()
+                ))
+            }
+        }
+    }
 }
 
 #[cfg(feature = "embedded")]
-fn release_embedded_lock(pidfile: PathBuf) {
-    let _ = fs::remove_file(pidfile);
+fn release_embedded_lock(lock: EmbeddedWorkspaceLock) {
+    log_info(&format!(
+        "Releasing embedded lock: {}",
+        lock.pidfile.display()
+    ));
+    let _ = fs::remove_file(&lock.pidfile);
+    // WorkspaceLock is automatically released on drop via flock(LOCK_UN)
 }
 
 #[cfg(feature = "embedded")]
 fn start_embedded(config: &SyftboxRuntimeConfig) -> Result<()> {
+    log_info("================================================================================");
+    log_info("EMBEDDED SYFTBOX DAEMON STARTUP");
+    log_info("================================================================================");
+
     let config_path = &config.config_path;
+    log_info(&format!("Config path: {}", config_path.display()));
+    log_info(&format!("Data dir: {}", config.data_dir.display()));
+    log_info(&format!("Email: {}", config.email));
+
     if !config_path.exists() {
+        log_error(&format!(
+            "Config file does not exist: {}",
+            config_path.display()
+        ));
         return Err(anyhow!(
             "SyftBox config file does not exist: {}",
             config_path.display()
@@ -581,19 +948,56 @@ fn start_embedded(config: &SyftboxRuntimeConfig) -> Result<()> {
         .and_then(|c| c.client_token.clone())
         .unwrap_or_default();
 
+    log_info(&format!("Configured client_url: {}", client_url));
+    log_info(&format!("Has client_token: {}", !client_token.is_empty()));
+
     // Match CLI behavior: prefer binding to the configured control-plane address.
+    //
+    // IMPORTANT: The syftbox-rs daemon uses `addr.parse::<SocketAddr>()` which CANNOT
+    // resolve hostnames like "localhost" - it only accepts numeric IP addresses.
+    // We MUST convert "localhost" to "127.0.0.1" here, otherwise the control plane
+    // will silently fail to bind and the daemon will appear to hang.
+    // See: embedded_backend_works_with_localhost_client_url test
     let http_addr = parse_host_port(&client_url)
-        .map(|(host, port)| format!("{host}:{port}"))
-        .unwrap_or_else(|| "127.0.0.1:7938".to_string());
+        .map(|(host, port)| {
+            let normalized_host = normalize_host_for_socket_addr(&host);
+            if host != normalized_host {
+                log_info(&format!(
+                    "Normalized hostname '{}' -> '{}' for socket binding",
+                    host, normalized_host
+                ));
+            }
+            format!("{normalized_host}:{port}")
+        })
+        .unwrap_or_else(|| {
+            log_warn("Could not parse client_url, falling back to 127.0.0.1:7938");
+            "127.0.0.1:7938".to_string()
+        });
+
+    log_info(&format!(
+        "Will attempt to bind control plane to: {}",
+        http_addr
+    ));
 
     let overrides = syftbox_rs::config::ConfigOverrides {
         data_dir: Some(config.data_dir.clone()),
         email: Some(config.email.clone()),
         server_url: None,
-        client_url: Some(client_url),
+        client_url: Some(client_url.clone()),
         client_token: Some(client_token),
     };
-    let cfg = syftbox_rs::config::Config::load_with_overrides(config_path, overrides)?;
+
+    log_info("Loading syftbox-rs config with overrides...");
+    let cfg = match syftbox_rs::config::Config::load_with_overrides(config_path, overrides) {
+        Ok(c) => {
+            log_info("Config loaded successfully");
+            c
+        }
+        Err(e) => {
+            log_error(&format!("Failed to load config: {}", e));
+            return Err(e);
+        }
+    };
 
     let log_path = config
         .config_path
@@ -602,28 +1006,68 @@ fn start_embedded(config: &SyftboxRuntimeConfig) -> Result<()> {
         .join("logs")
         .join("syftbox.log");
 
+    log_info(&format!("Daemon log path: {}", log_path.display()));
+
     let opts = syftbox_rs::daemon::DaemonOptions {
-        http_addr: Some(http_addr),
+        http_addr: Some(http_addr.clone()),
         http_token: None,
         // Retry forever: don't exit if server is temporarily down.
         healthz_max_attempts: None,
-        log_path: Some(log_path),
+        log_path: Some(log_path.clone()),
     };
 
+    // Check if we already have a running daemon in this process
     let cell = EMBEDDED_DAEMON.get_or_init(|| Mutex::new(None));
     let mut guard = cell.lock().unwrap();
     if guard.is_some() {
+        log_info("Embedded daemon already running in this process, skipping startup");
         return Ok(());
     }
 
-    let pidfile = ensure_embedded_lock(config)?;
+    // Ensure we have exclusive access (handles stale processes)
+    log_info("Acquiring workspace lock...");
+    let workspace_lock = match ensure_embedded_lock(config) {
+        Ok(lock) => {
+            log_info(&format!(
+                "Workspace lock acquired: {}",
+                lock.pidfile.display()
+            ));
+            lock
+        }
+        Err(e) => {
+            log_error(&format!("Failed to acquire workspace lock: {}", e));
+            return Err(e);
+        }
+    };
+
+    // Start the daemon
+    log_info("Starting syftbox-rs daemon thread...");
     match syftbox_rs::daemon::start_threaded(cfg, opts) {
         Ok(handle) => {
-            *guard = Some(EmbeddedDaemonState { handle, pidfile });
+            log_info("Daemon thread started successfully");
+            *guard = Some(EmbeddedDaemonState {
+                handle,
+                workspace_lock,
+            });
+
+            // Log startup complete
+            log_info(&format!(
+                "================================================================================\n\
+                 EMBEDDED SYFTBOX DAEMON STARTED\n\
+                 Control plane: {}\n\
+                 Data dir: {}\n\
+                 Log file: {}\n\
+                 ================================================================================",
+                http_addr,
+                config.data_dir.display(),
+                log_path.display()
+            ));
+
             Ok(())
         }
         Err(e) => {
-            release_embedded_lock(pidfile);
+            log_error(&format!("Failed to start daemon thread: {}", e));
+            release_embedded_lock(workspace_lock);
             Err(e)
         }
     }
@@ -631,12 +1075,22 @@ fn start_embedded(config: &SyftboxRuntimeConfig) -> Result<()> {
 
 #[cfg(feature = "embedded")]
 fn stop_embedded() -> Result<()> {
+    log_info("Stopping embedded daemon...");
     if let Some(cell) = EMBEDDED_DAEMON.get() {
         let mut guard = cell.lock().unwrap();
         if let Some(state) = guard.take() {
-            state.handle.stop()?;
-            release_embedded_lock(state.pidfile);
+            log_info("Sending stop signal to daemon thread...");
+            match state.handle.stop() {
+                Ok(()) => log_info("Daemon thread stopped successfully"),
+                Err(e) => log_error(&format!("Error stopping daemon thread: {}", e)),
+            }
+            release_embedded_lock(state.workspace_lock);
+            log_info("Embedded daemon stopped");
+        } else {
+            log_info("No embedded daemon running in this process");
         }
+    } else {
+        log_info("Embedded daemon was never initialized");
     }
     Ok(())
 }
