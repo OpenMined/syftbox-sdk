@@ -30,12 +30,33 @@ fn log_info(msg: &str) {
     log_embedded("INFO", msg);
 }
 
+#[cfg(feature = "embedded")]
 fn log_warn(msg: &str) {
     log_embedded("WARN", msg);
 }
 
 fn log_error(msg: &str) {
     log_embedded("ERROR", msg);
+}
+
+fn env_flag(name: &str) -> bool {
+    env::var(name)
+        .ok()
+        .map(|v| {
+            let v = v.trim().to_ascii_lowercase();
+            v == "1" || v == "true" || v == "yes" || v == "on"
+        })
+        .unwrap_or(false)
+}
+
+fn debug_enabled() -> bool {
+    env_flag("SYFTBOX_DEBUG") || env_flag("BIOVAULT_DEV_SYFTBOX") || env_flag("BIOVAULT_DEV_MODE")
+}
+
+fn log_debug(msg: &str) {
+    if debug_enabled() {
+        log_info(msg);
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -102,6 +123,30 @@ pub fn is_syftbox_running(config: &SyftboxRuntimeConfig) -> Result<bool> {
 pub fn start_syftbox(config: &SyftboxRuntimeConfig) -> Result<bool> {
     if use_embedded_backend() {
         log_info("Starting SyftBox with embedded backend");
+        log_debug(&format!(
+            "Runtime config: data_dir={} config_path={} email={}",
+            config.data_dir.display(),
+            config.config_path.display(),
+            config.email
+        ));
+        log_debug(&format!(
+            "Env BV_SYFTBOX_BACKEND={:?} SYFTBOX_CLIENT_URL={:?}",
+            env::var("BV_SYFTBOX_BACKEND").ok(),
+            env::var("SYFTBOX_CLIENT_URL").ok()
+        ));
+        if let Ok(cfg) = crate::syftbox::config::SyftBoxConfigFile::load(&config.config_path) {
+            log_debug(&format!(
+                "SyftBox config.json: client_url={} token_present={} data_dir={}",
+                cfg.client_url.unwrap_or_else(|| "<none>".to_string()),
+                cfg.client_token
+                    .as_ref()
+                    .map(|t| !t.is_empty())
+                    .unwrap_or(false),
+                cfg.data_dir
+            ));
+        } else {
+            log_debug("SyftBox config.json: failed to load");
+        }
 
         // Treat embedded as Direct mode: no external process to inspect.
         if is_running_with_mode(config, SyftBoxMode::Direct)? {
@@ -113,6 +158,9 @@ pub fn start_syftbox(config: &SyftboxRuntimeConfig) -> Result<bool> {
 
         #[cfg(feature = "embedded")]
         start_embedded(config)?;
+
+        #[cfg(feature = "embedded")]
+        debug_probe_control_plane(config, "pre-wait");
 
         log_info("Waiting for control plane to become responsive (timeout: 10s)...");
         let start_time = Instant::now();
@@ -144,6 +192,9 @@ pub fn start_syftbox(config: &SyftboxRuntimeConfig) -> Result<bool> {
             "SyftBox embedded daemon started successfully (took {:?})",
             elapsed
         ));
+
+        #[cfg(feature = "embedded")]
+        debug_probe_control_plane(config, "post-wait");
 
         return Ok(true);
     }
@@ -388,7 +439,14 @@ fn is_running_with_mode(config: &SyftboxRuntimeConfig, mode: SyftBoxMode) -> Res
     if use_embedded_backend() {
         let _ = mode;
         let client_url = resolve_client_url(config);
-        let is_running = probe_client_url(&client_url);
+        let token = crate::syftbox::config::SyftBoxConfigFile::load(&config.config_path)
+            .ok()
+            .and_then(|cfg| cfg.client_token)
+            .filter(|t| !t.is_empty());
+        let is_running = match token {
+            Some(t) => probe_client_url_path(&client_url, "/v1/sync/status", Some(&t)),
+            None => probe_client_url_path(&client_url, "/v1/status", None),
+        };
         // Debug: log what we're probing (only when checking, not spamming)
         if !is_running {
             log_info(&format!(
@@ -515,7 +573,12 @@ fn running_pids(config: &SyftboxRuntimeConfig, mode: SyftBoxMode) -> Result<Vec<
 ///
 /// This does an HTTP GET to /v1/status to verify it's actually a SyftBox control plane,
 /// not just any service listening on that port.
+#[cfg(not(unix))]
 fn probe_client_url(client_url: &str) -> bool {
+    probe_client_url_path(client_url, "/v1/status", None)
+}
+
+fn probe_client_url_path(client_url: &str, path: &str, token: Option<&str>) -> bool {
     let (host, port) = match parse_host_port(client_url) {
         Some(v) => v,
         None => ("127.0.0.1".to_string(), 7938),
@@ -531,34 +594,67 @@ fn probe_client_url(client_url: &str) -> bool {
     // First check TCP connectivity
     let stream = match TcpStream::connect_timeout(&addr, Duration::from_millis(500)) {
         Ok(s) => s,
-        Err(_) => return false,
+        Err(e) => {
+            if debug_enabled() {
+                log_info(&format!(
+                    "probe_client_url connect failed {}:{} ({})",
+                    host, port, e
+                ));
+            }
+            return false;
+        }
     };
 
     // Set timeouts for the HTTP request
     let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
     let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
 
-    // Make a simple HTTP GET request to /v1/status
+    // Make a simple HTTP GET request
     use std::io::{BufRead, BufReader, Write};
     let mut stream = stream;
-    let request = format!(
-        "GET /v1/status HTTP/1.1\r\nHost: {}:{}\r\nConnection: close\r\n\r\n",
-        host, port
+    let mut request = format!(
+        "GET {} HTTP/1.1\r\nHost: {}:{}\r\nConnection: close\r\n",
+        path, host, port
     );
+    if let Some(t) = token {
+        request.push_str(&format!("Authorization: Bearer {}\r\n", t));
+    }
+    request.push_str("\r\n");
 
-    if stream.write_all(request.as_bytes()).is_err() {
+    if let Err(e) = stream.write_all(request.as_bytes()) {
+        if debug_enabled() {
+            log_info(&format!(
+                "probe_client_url write failed {}:{} ({})",
+                host, port, e
+            ));
+        }
         return false;
     }
 
     // Read the response - we just need to check for HTTP 200 OK
     let mut reader = BufReader::new(stream);
     let mut status_line = String::new();
-    if reader.read_line(&mut status_line).is_err() {
+    if let Err(e) = reader.read_line(&mut status_line) {
+        if debug_enabled() {
+            log_info(&format!(
+                "probe_client_url read failed {}:{} ({})",
+                host, port, e
+            ));
+        }
         return false;
     }
 
-    // Check if response is HTTP 200 (SyftBox control plane responds with 200 to /v1/status)
-    status_line.contains("200")
+    // Check if response is HTTP 200
+    let ok = status_line.contains("200");
+    if debug_enabled() && !ok {
+        log_info(&format!(
+            "probe_client_url non-200 {}:{} status_line={}",
+            host,
+            port,
+            status_line.trim()
+        ));
+    }
+    ok
 }
 
 fn parse_host_port(url: &str) -> Option<(String, u16)> {
@@ -597,6 +693,107 @@ fn resolve_client_url(config: &SyftboxRuntimeConfig) -> String {
         .ok()
         .and_then(|cfg| cfg.client_url)
         .unwrap_or_else(|| "http://127.0.0.1:7938".to_string())
+}
+
+#[cfg(feature = "embedded")]
+fn debug_probe_control_plane(config: &SyftboxRuntimeConfig, phase: &str) {
+    if !debug_enabled() {
+        return;
+    }
+    let cfg_file = crate::syftbox::config::SyftBoxConfigFile::load(&config.config_path).ok();
+    let client_url = cfg_file
+        .as_ref()
+        .and_then(|c| c.client_url.clone())
+        .unwrap_or_else(|| "http://127.0.0.1:7938".to_string());
+    let token = cfg_file.as_ref().and_then(|c| c.client_token.as_ref());
+    log_info(&format!(
+        "[debug:{}] control plane config: client_url={} token_present={}",
+        phase,
+        client_url,
+        token.map(|t| !t.is_empty()).unwrap_or(false)
+    ));
+
+    debug_http_probe(&client_url, "/v1/status", None, phase);
+    debug_http_probe(&client_url, "/v1/sync/status", token, phase);
+    debug_http_probe(&client_url, "/v1/uploads/", token, phase);
+}
+
+#[cfg(feature = "embedded")]
+fn debug_http_probe(client_url: &str, path: &str, token: Option<&String>, phase: &str) {
+    let (host, port) = match parse_host_port(client_url) {
+        Some(v) => v,
+        None => {
+            log_warn(&format!(
+                "[debug:{}] probe {} parse_host_port failed for {}",
+                phase, path, client_url
+            ));
+            return;
+        }
+    };
+    let host = normalize_host_for_socket_addr(&host);
+    let addr: SocketAddr = match format!("{host}:{port}").parse() {
+        Ok(a) => a,
+        Err(e) => {
+            log_warn(&format!(
+                "[debug:{}] probe {} invalid addr {}:{} ({})",
+                phase, path, host, port, e
+            ));
+            return;
+        }
+    };
+
+    let start = Instant::now();
+    let stream = match TcpStream::connect_timeout(&addr, Duration::from_millis(1000)) {
+        Ok(s) => s,
+        Err(e) => {
+            log_warn(&format!(
+                "[debug:{}] probe {} connect failed {}:{} ({})",
+                phase, path, host, port, e
+            ));
+            return;
+        }
+    };
+
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(1000)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(1000)));
+
+    use std::io::{BufRead, BufReader, Write};
+    let mut stream = stream;
+    let mut request = format!(
+        "GET {} HTTP/1.1\r\nHost: {}:{}\r\nConnection: close\r\n",
+        path, host, port
+    );
+    if let Some(t) = token {
+        request.push_str(&format!("Authorization: Bearer {}\r\n", t));
+    }
+    request.push_str("\r\n");
+
+    if let Err(e) = stream.write_all(request.as_bytes()) {
+        log_warn(&format!(
+            "[debug:{}] probe {} write failed {}:{} ({})",
+            phase, path, host, port, e
+        ));
+        return;
+    }
+
+    let mut reader = BufReader::new(stream);
+    let mut status_line = String::new();
+    if let Err(e) = reader.read_line(&mut status_line) {
+        log_warn(&format!(
+            "[debug:{}] probe {} read failed {}:{} ({})",
+            phase, path, host, port, e
+        ));
+        return;
+    }
+
+    log_info(&format!(
+        "[debug:{}] probe {}{} -> {} ({:?})",
+        phase,
+        client_url,
+        path,
+        status_line.trim(),
+        start.elapsed()
+    ));
 }
 
 #[cfg(feature = "embedded")]
@@ -827,6 +1024,13 @@ fn ensure_embedded_lock(config: &SyftboxRuntimeConfig) -> Result<EmbeddedWorkspa
 
             if let Some(pid) = existing_pid {
                 log_info(&format!("Found pidfile with pid={}", pid));
+                if pid == current_pid {
+                    log_error("Workspace lock held by current process; refusing to self-terminate");
+                    return Err(anyhow!(
+                        "Workspace lock already held by current process (pid {}).",
+                        current_pid
+                    ));
+                }
 
                 // Check if that process is healthy
                 let client_url =
@@ -836,23 +1040,15 @@ fn ensure_embedded_lock(config: &SyftboxRuntimeConfig) -> Result<EmbeddedWorkspa
                         .unwrap_or_else(|| "http://127.0.0.1:7938".to_string());
 
                 if is_control_plane_responsive(&client_url, Duration::from_secs(2)) {
-                    log_error(&format!(
-                        "Cannot start: another instance (pid={}) is running and healthy for data_dir={}",
-                        pid,
-                        config.data_dir.display()
-                    ));
-                    return Err(anyhow!(
-                        "Another BioVault instance (pid {}) is already running for {}. \
-                         The control plane is responsive at {}.",
-                        pid,
-                        config.data_dir.display(),
-                        client_url
+                    log_warn(&format!(
+                        "Another instance (pid={}) is healthy at {}. Taking over.",
+                        pid, client_url
                     ));
                 }
 
-                // Not responsive - try to kill it
+                // Terminate existing process to take over the workspace.
                 log_warn(&format!(
-                    "Existing process (pid={}) is not responsive, attempting to kill...",
+                    "Terminating existing process (pid={}) to take over workspace...",
                     pid
                 ));
 
@@ -1050,6 +1246,11 @@ fn start_embedded(config: &SyftboxRuntimeConfig) -> Result<()> {
 
     // Start the daemon
     log_info("Starting syftbox-rs daemon thread...");
+    // The SDK already holds the workspace lock; avoid double-locking inside syftbox-rs.
+    std::env::set_var(
+        "SYFTBOX_SKIP_WORKSPACE_LOCK_DATA_DIR",
+        config.data_dir.to_string_lossy().to_string(),
+    );
     match syftbox_rs::daemon::start_threaded(cfg, opts) {
         Ok(handle) => {
             log_info("Daemon thread started successfully");
