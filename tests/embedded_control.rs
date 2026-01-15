@@ -156,6 +156,9 @@ fn embedded_backend_starts_and_stops() {
 }
 
 #[test]
+// Skip on Windows: these tests share a process-global singleton and require --test-threads=1
+// which Windows CI doesn't enforce reliably
+#[cfg(not(windows))]
 fn embedded_backend_works_with_localhost_client_url() {
     let server = FakeHttpServer::start();
     let tmp = tempfile::tempdir().unwrap();
@@ -212,6 +215,9 @@ fn embedded_backend_works_with_localhost_client_url() {
 }
 
 #[test]
+// Skip on Windows: these tests share a process-global singleton and require --test-threads=1
+// which Windows CI doesn't enforce reliably
+#[cfg(not(windows))]
 fn embedded_backend_falls_back_to_random_port_when_configured_port_busy() {
     let server = FakeHttpServer::start();
     let tmp = tempfile::tempdir().unwrap();
