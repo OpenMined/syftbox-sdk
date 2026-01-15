@@ -1020,8 +1020,16 @@ fn start_embedded(config: &SyftboxRuntimeConfig) -> Result<()> {
     let cell = EMBEDDED_DAEMON.get_or_init(|| Mutex::new(None));
     let mut guard = cell.lock().unwrap();
     if guard.is_some() {
-        log_info("Embedded daemon already running in this process, skipping startup");
-        return Ok(());
+        // Verify the control plane is actually responsive before skipping
+        if is_control_plane_responsive(&client_url, Duration::from_secs(1)) {
+            log_info("Embedded daemon already running in this process, skipping startup");
+            return Ok(());
+        } else {
+            log_warn("Embedded daemon state exists but control plane not responsive, cleaning up stale state");
+            if let Some(state) = guard.take() {
+                release_embedded_lock(state.workspace_lock);
+            }
+        }
     }
 
     // Ensure we have exclusive access (handles stale processes)
