@@ -1,4 +1,5 @@
 use crate::syftbox::syc;
+use crate::syftbox::syc::BundleResolutionError;
 use anyhow::{anyhow, bail, Context, Result};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -8,8 +9,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use syft_crypto_protocol::datasite::{
     bytes::{read_bytes, write_bytes, BytesReadOpts, BytesWriteOpts, BytesWriteOutcome},
-    context::{ensure_vault_layout, resolve_vault, AppContext},
+    context::{bundle_path_for_identity, ensure_vault_layout, resolve_vault, AppContext},
 };
+use syft_crypto_protocol::envelope::ParsedEnvelope;
 use tracing::{instrument, warn};
 use walkdir::WalkDir;
 
@@ -36,6 +38,13 @@ pub struct SyftStorageConfig {
     pub vault_path: Option<PathBuf>,
     pub disable_crypto: bool,
     pub debug: bool,
+}
+
+fn syc_paths_match(left: &Path, right: &Path) -> bool {
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => left == right,
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -76,6 +85,9 @@ impl SyftBoxStorage {
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                 .unwrap_or(false)
             || cfg!(test);
+        let debug = config.debug
+            || env::var_os("BIOVAULT_DEV_SYFTBOX").is_some()
+            || env::var_os("SYFTBOX_DEBUG_CRYPTO").is_some();
 
         let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
         let encrypted_root = syc::resolve_encrypted_root(&canonical_root);
@@ -94,18 +106,30 @@ impl SyftBoxStorage {
                 })
         };
 
-        let uses_crypto = matches!(backend, StorageBackend::SyctCrypto(_));
-        if config.debug {
-            eprintln!(
-                "SyftBoxStorage initialized: root={:?}, crypto={}",
-                encrypted_root, uses_crypto
-            );
+        if debug {
+            match &backend {
+                StorageBackend::SyctCrypto(b) => {
+                    eprintln!(
+                        "[syc][debug] SyftBoxStorage initialized: root={} crypto=true vault_path={} data_root={} shadow_root={}",
+                        encrypted_root.display(),
+                        b.context.vault_path.display(),
+                        b.context.data_root.display(),
+                        b.context.shadow_root.display()
+                    );
+                }
+                StorageBackend::PlainFs => {
+                    eprintln!(
+                        "[syc][debug] SyftBoxStorage initialized: root={} crypto=false",
+                        encrypted_root.display()
+                    );
+                }
+            }
         }
 
         Self {
             root: encrypted_root,
             backend,
-            debug: config.debug,
+            debug,
         }
     }
 
@@ -247,23 +271,58 @@ impl SyftBoxStorage {
                 }
 
                 // Decrypt from datasites to shadow using syc file decrypt pattern
+                use crate::syftbox::syc::resolve_sender_bundle;
                 use syft_crypto_protocol::datasite::crypto::{
                     decrypt_envelope_for_recipient, load_private_keys_for_identity,
-                    parse_optional_envelope, resolve_sender_bundle_for_decrypt,
+                    parse_optional_envelope,
                 };
 
                 let bytes = fs::read(datasite_path)?;
 
                 // Try to decrypt - ONLY cache if we get plaintext
                 let envelope = parse_optional_envelope(&bytes)?;
+                if self.debug {
+                    if let Some(env) = &envelope {
+                        eprintln!(
+                            "[syc][debug] read_with_shadow: encrypted sender={} sender_fp={} recipients={} path={}",
+                            env.prelude.sender.identity,
+                            env.prelude.sender.ik_fingerprint,
+                            env.prelude.recipients.len(),
+                            datasite_path.display()
+                        );
+                    } else {
+                        eprintln!(
+                            "[syc][debug] read_with_shadow: plaintext path={}",
+                            datasite_path.display()
+                        );
+                    }
+                }
 
                 let plaintext = if let Some(envelope) = envelope {
                     // File is encrypted, MUST decrypt successfully to cache
                     let identity = syc::resolve_identity(None, &backend.context.vault_path)?;
                     let recipient_keys =
                         load_private_keys_for_identity(&backend.context, &identity)?;
-                    let sender_bundle =
-                        resolve_sender_bundle_for_decrypt(&backend.context, &envelope)?;
+                    let sender_bundle = match resolve_sender_bundle(&backend.context, &envelope) {
+                        Ok(bundle) => bundle,
+                        Err(err) => {
+                            log_bundle_resolution_error(
+                                self.debug,
+                                &err,
+                                &backend.context,
+                                &envelope,
+                                datasite_path,
+                            );
+                            return Err(err.into());
+                        }
+                    };
+                    if self.debug {
+                        eprintln!(
+                            "[syc][debug] read_with_shadow: decrypt as identity={} sender_bundle_fp={}",
+                            identity,
+                            sender_bundle.identity_fingerprint()
+                        );
+                    }
                     decrypt_envelope_for_recipient(
                         &identity,
                         &recipient_keys,
@@ -334,15 +393,25 @@ impl SyftBoxStorage {
                 let shadow_path = resolve_shadow_path(&backend.context, &relative);
 
                 // Decrypt from datasites to shadow using syc file decrypt pattern
+                use crate::syftbox::syc::resolve_sender_bundle;
                 use syft_crypto_protocol::datasite::crypto::{
                     decrypt_envelope_for_recipient, load_private_keys_for_identity,
-                    parse_optional_envelope, resolve_sender_bundle_for_decrypt,
+                    parse_optional_envelope,
                 };
 
                 let bytes = fs::read(datasite_path)?;
                 let envelope = parse_optional_envelope(&bytes)?;
 
                 if let Some(envelope) = envelope {
+                    if self.debug {
+                        eprintln!(
+                            "[syc][debug] read_with_shadow_metadata: encrypted sender={} sender_fp={} recipients={} path={}",
+                            envelope.prelude.sender.identity,
+                            envelope.prelude.sender.ik_fingerprint,
+                            envelope.prelude.recipients.len(),
+                            datasite_path.display()
+                        );
+                    }
                     // Extract sender metadata from the envelope prelude
                     let sender_identity = envelope.prelude.sender.identity.clone();
                     let sender_fingerprint = envelope.prelude.sender.ik_fingerprint.clone();
@@ -351,8 +420,26 @@ impl SyftBoxStorage {
                     let identity = syc::resolve_identity(None, &backend.context.vault_path)?;
                     let recipient_keys =
                         load_private_keys_for_identity(&backend.context, &identity)?;
-                    let sender_bundle =
-                        resolve_sender_bundle_for_decrypt(&backend.context, &envelope)?;
+                    let sender_bundle = match resolve_sender_bundle(&backend.context, &envelope) {
+                        Ok(bundle) => bundle,
+                        Err(err) => {
+                            log_bundle_resolution_error(
+                                self.debug,
+                                &err,
+                                &backend.context,
+                                &envelope,
+                                datasite_path,
+                            );
+                            return Err(err.into());
+                        }
+                    };
+                    if self.debug {
+                        eprintln!(
+                            "[syc][debug] read_with_shadow_metadata: decrypt as identity={} sender_bundle_fp={}",
+                            identity,
+                            sender_bundle.identity_fingerprint()
+                        );
+                    }
                     let plaintext = decrypt_envelope_for_recipient(
                         &identity,
                         &recipient_keys,
@@ -427,6 +514,26 @@ impl SyftBoxStorage {
         policy: WritePolicy,
         overwrite: bool,
     ) -> Result<BytesWriteOutcome> {
+        if self.debug {
+            match &policy {
+                WritePolicy::Plaintext => {
+                    eprintln!(
+                        "[syc][debug] write_with_shadow: plaintext size={} path={}",
+                        plaintext.len(),
+                        absolute_path.display()
+                    );
+                }
+                WritePolicy::Envelope { recipients, hint } => {
+                    eprintln!(
+                        "[syc][debug] write_with_shadow: envelope size={} recipients={} hint={:?} path={}",
+                        plaintext.len(),
+                        recipients.len(),
+                        hint,
+                        absolute_path.display()
+                    );
+                }
+            }
+        }
         // Check if we'll need to create a shadow (before policy is moved)
         let needs_shadow = matches!(&policy, WritePolicy::Envelope { .. });
 
@@ -779,14 +886,122 @@ impl SyftBoxStorage {
     }
 }
 
+fn log_bundle_resolution_error(
+    debug: bool,
+    err: &BundleResolutionError,
+    context: &AppContext,
+    envelope: &ParsedEnvelope,
+    datasite_path: &Path,
+) {
+    if !debug {
+        return;
+    }
+
+    let sender_identity = envelope.prelude.sender.identity.as_str();
+    let expected_fp = envelope.prelude.sender.ik_fingerprint.as_str();
+    let local_bundle_path = bundle_path_for_identity(&context.vault_path, sender_identity);
+    let datasite_bundle_path = context
+        .data_root
+        .join(sender_identity)
+        .join("public")
+        .join("crypto")
+        .join("did.json");
+
+    eprintln!(
+        "[syc][debug] bundle resolution error: sender={} expected_fp={} vault={} local_bundle={} datasite_bundle={} file={}",
+        sender_identity,
+        expected_fp,
+        context.vault_path.display(),
+        local_bundle_path.display(),
+        datasite_bundle_path.display(),
+        datasite_path.display()
+    );
+
+    match err {
+        BundleResolutionError::NotCached {
+            identity,
+            datasite_available,
+        } => {
+            if let Some(info) = datasite_available {
+                eprintln!(
+                    "[syc][debug] bundle not cached: identity={} datasite_fp={} datasite_matches={} datasite_path={}",
+                    identity,
+                    info.fingerprint,
+                    info.matches_expected,
+                    info.path.display()
+                );
+            } else {
+                eprintln!(
+                    "[syc][debug] bundle not cached: identity={} datasite_fp=none",
+                    identity
+                );
+            }
+        }
+        BundleResolutionError::FingerprintMismatch {
+            identity,
+            expected,
+            cached,
+            datasite_available,
+        } => {
+            if let Some(info) = datasite_available {
+                eprintln!(
+                    "[syc][debug] bundle fingerprint mismatch: identity={} expected={} cached={} datasite_fp={} datasite_matches={} datasite_path={}",
+                    identity,
+                    expected,
+                    cached,
+                    info.fingerprint,
+                    info.matches_expected,
+                    info.path.display()
+                );
+            } else {
+                eprintln!(
+                    "[syc][debug] bundle fingerprint mismatch: identity={} expected={} cached={} datasite_fp=none",
+                    identity,
+                    expected,
+                    cached
+                );
+            }
+        }
+        BundleResolutionError::LoadError { identity, source } => {
+            eprintln!(
+                "[syc][debug] bundle load error: identity={} source={}",
+                identity, source
+            );
+        }
+    }
+}
+
 impl SyctCryptoBackend {
     fn new(root: &Path, vault_override: Option<&Path>) -> Result<Self> {
         let vault_env = env::var_os("SYC_VAULT").map(PathBuf::from);
+        let expected_from_data_dir = env::var_os("SYFTBOX_DATA_DIR")
+            .map(PathBuf::from)
+            .map(|dir| dir.join(".syc"));
+        if let (Some(expected), Some(env_vault)) = (&expected_from_data_dir, &vault_env) {
+            if !syc_paths_match(expected, env_vault) {
+                return Err(anyhow!(
+                    "SYC_VAULT must match SYFTBOX_DATA_DIR/.syc (SYC_VAULT={}, expected={})",
+                    env_vault.display(),
+                    expected.display()
+                ));
+            }
+        }
+
+        if vault_env.is_none()
+            && vault_override.is_none()
+            && root.file_name().map(|n| n == ".biovault").unwrap_or(false)
+        {
+            return Err(anyhow!(
+                "Refusing to default SYC_VAULT under BIOVAULT_HOME; set SYC_VAULT or SYFTBOX_DATA_DIR"
+            ));
+        }
+
         let vault_base = vault_env
             .as_deref()
             .or(vault_override)
             .map(PathBuf::from)
-            .unwrap_or_else(|| syc::vault_path_for_home(root));
+            .or(expected_from_data_dir)
+            .unwrap_or_else(|| root.join(".syc"));
         let vault_path = resolve_vault(Some(vault_base));
         ensure_vault_layout(&vault_path)
             .map_err(|err| anyhow!("failed to prepare syc vault: {err}"))?;
