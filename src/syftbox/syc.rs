@@ -542,7 +542,7 @@ pub enum BundleResolutionError {
     NotCached {
         identity: String,
         /// Bundle available in datasite directory (caller can import if desired)
-        datasite_available: Option<DatasiteBundleInfo>,
+        datasite_available: Option<Box<DatasiteBundleInfo>>,
     },
     /// Cached bundle fingerprint doesn't match envelope's expected fingerprint.
     FingerprintMismatch {
@@ -550,7 +550,7 @@ pub enum BundleResolutionError {
         expected: String,
         cached: String,
         /// Bundle available in datasite directory (caller can import if desired)
-        datasite_available: Option<DatasiteBundleInfo>,
+        datasite_available: Option<Box<DatasiteBundleInfo>>,
     },
     /// Error loading or parsing bundle.
     LoadError { identity: String, source: String },
@@ -674,12 +674,12 @@ pub fn resolve_sender_bundle(
                     sender_identity, expected_fp, info.fingerprint
                 );
             }
-            Some(DatasiteBundleInfo {
+            Some(Box::new(DatasiteBundleInfo {
                 identity: info.identity,
                 fingerprint: info.fingerprint,
                 matches_expected: matches,
                 path: datasite_bundle_path(&context.data_root, sender_identity),
-            })
+            }))
         }
         Ok(None) => None,
         Err(e) => {
