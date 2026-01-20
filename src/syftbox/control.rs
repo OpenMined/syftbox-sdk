@@ -538,9 +538,9 @@ fn running_pids(config: &SyftboxRuntimeConfig, mode: SyftBoxMode) -> Result<Vec<
                         if pid_str.is_empty() {
                             continue;
                         }
-                        if !cmdline.is_empty()
-                            && !(cmdline.contains(config_str.as_ref())
-                                || cmdline.contains(data_dir_str.as_ref()))
+                        if !(cmdline.is_empty()
+                            || cmdline.contains(config_str.as_ref())
+                            || cmdline.contains(data_dir_str.as_ref()))
                         {
                             continue;
                         }
@@ -805,30 +805,13 @@ fn embedded_pidfile_path(config: &SyftboxRuntimeConfig) -> PathBuf {
         .join(SYFTBOX_EMBEDDED_PIDFILE_NAME)
 }
 
-#[cfg(feature = "embedded")]
+#[cfg(all(feature = "embedded", not(target_os = "windows")))]
 fn is_pid_running(pid: u32) -> bool {
-    #[cfg(target_os = "windows")]
-    {
-        let mut cmd = Command::new("tasklist");
-        cmd.args(["/FI", &format!("PID eq {}", pid)]);
-        hide_console_window(&mut cmd);
-        if let Ok(output) = cmd.output() {
-            if output.status.success() {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                return stdout.contains(&pid.to_string());
-            }
-        }
-        false
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        Command::new("ps")
-            .args(["-p", &pid.to_string()])
-            .status()
-            .map(|status| status.success())
-            .unwrap_or(false)
-    }
+    Command::new("ps")
+        .args(["-p", &pid.to_string()])
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
 }
 
 /// Check if a SyftBox control plane at the given URL is responsive.
