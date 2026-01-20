@@ -544,7 +544,10 @@ impl SyftBoxStorage {
         if let StorageBackend::SyctCrypto(ref backend) = self.backend {
             if needs_shadow {
                 // Calculate shadow path
-                if let Ok(relative) = absolute_path.strip_prefix(&self.root) {
+                // Normalize paths to handle Windows extended-length path prefix (\\?\)
+                let normalized_path = strip_windows_prefix(absolute_path);
+                let normalized_root = strip_windows_prefix(&self.root);
+                if let Ok(relative) = normalized_path.strip_prefix(&normalized_root) {
                     let shadow_path = backend.context.shadow_root.join(relative);
 
                     if self.debug {
@@ -644,7 +647,10 @@ impl SyftBoxStorage {
         // If crypto is enabled, also remove the corresponding shadow file/directory
         if let StorageBackend::SyctCrypto(ref backend) = self.backend {
             // Calculate shadow path: strip datasites root, add to shadow root
-            if let Ok(relative) = absolute_path.strip_prefix(&self.root) {
+            // Normalize paths to handle Windows extended-length path prefix (\\?\)
+            let normalized_path = strip_windows_prefix(absolute_path);
+            let normalized_root = strip_windows_prefix(&self.root);
+            if let Ok(relative) = normalized_path.strip_prefix(&normalized_root) {
                 let shadow_path = backend.context.shadow_root.join(relative);
 
                 if shadow_path.exists() {
@@ -862,8 +868,12 @@ impl SyftBoxStorage {
     fn relative_from_root(&self, absolute: &Path) -> Result<PathBuf> {
         let canonical_absolute = self.canonicalize_for_comparison(absolute);
 
-        canonical_absolute
-            .strip_prefix(&self.root)
+        // Normalize paths to handle Windows extended-length path prefix (\\?\)
+        let normalized_absolute = strip_windows_prefix(&canonical_absolute);
+        let normalized_root = strip_windows_prefix(&self.root);
+
+        normalized_absolute
+            .strip_prefix(&normalized_root)
             .map(|p| p.to_path_buf())
             .map_err(|_| {
                 anyhow!(
@@ -982,8 +992,8 @@ fn log_bundle_resolution_error(
 /// This handles the case where paths from different sources may have different prefix styles.
 fn strip_windows_prefix(path: &Path) -> PathBuf {
     let path_str = path.to_string_lossy();
-    if path_str.starts_with(r"\\?\") {
-        PathBuf::from(&path_str[4..])
+    if let Some(stripped) = path_str.strip_prefix(r"\\?\") {
+        PathBuf::from(stripped)
     } else {
         path.to_path_buf()
     }

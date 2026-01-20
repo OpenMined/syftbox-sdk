@@ -538,9 +538,9 @@ fn running_pids(config: &SyftboxRuntimeConfig, mode: SyftBoxMode) -> Result<Vec<
                         if pid_str.is_empty() {
                             continue;
                         }
-                        if !cmdline.is_empty()
-                            && !(cmdline.contains(config_str.as_ref())
-                                || cmdline.contains(data_dir_str.as_ref()))
+                        if !(cmdline.is_empty()
+                            || cmdline.contains(config_str.as_ref())
+                            || cmdline.contains(data_dir_str.as_ref()))
                         {
                             continue;
                         }
