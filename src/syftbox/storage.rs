@@ -677,7 +677,10 @@ impl SyftBoxStorage {
     }
 
     pub fn contains(&self, path: &Path) -> bool {
-        path.starts_with(&self.root)
+        // Normalize both paths to handle Windows extended-length path prefix (\\?\)
+        let normalized_root = strip_windows_prefix(&self.root);
+        let normalized_path = strip_windows_prefix(path);
+        normalized_path.starts_with(&normalized_root)
     }
 
     pub fn list_dir(&self, dir: &Path) -> Result<Vec<PathBuf>> {
@@ -874,7 +877,11 @@ impl SyftBoxStorage {
     fn ensure_within_root(&self, absolute: &Path) -> Result<()> {
         let canonical_absolute = self.canonicalize_for_comparison(absolute);
 
-        if canonical_absolute.starts_with(&self.root) {
+        // Normalize paths to handle Windows extended-length path prefix (\\?\)
+        let normalized_absolute = strip_windows_prefix(&canonical_absolute);
+        let normalized_root = strip_windows_prefix(&self.root);
+
+        if normalized_absolute.starts_with(&normalized_root) {
             Ok(())
         } else {
             Err(anyhow!(
@@ -968,6 +975,17 @@ fn log_bundle_resolution_error(
                 identity, source
             );
         }
+    }
+}
+
+/// Strip Windows extended-length path prefix (\\?\) for consistent path comparison.
+/// This handles the case where paths from different sources may have different prefix styles.
+fn strip_windows_prefix(path: &Path) -> PathBuf {
+    let path_str = path.to_string_lossy();
+    if path_str.starts_with(r"\\?\") {
+        PathBuf::from(&path_str[4..])
+    } else {
+        path.to_path_buf()
     }
 }
 
