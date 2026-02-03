@@ -85,12 +85,14 @@ if [[ "$OPEN_HTML_FLAG" == "1" ]]; then
   OPEN_FLAG="--open"
 fi
 
+TEST_THREADS="${RUST_TEST_THREADS:-1}"
+
 echo "==> Running coverage (HTML report)"
 # Use nextest only if supported by cargo-llvm-cov AND cargo-nextest is installed
 if cargo llvm-cov --help 2>/dev/null | grep -q -e "nextest" && command -v cargo-nextest >/dev/null 2>&1; then
-  cargo llvm-cov nextest --workspace --all-features --html $OPEN_FLAG
+  RUST_TEST_THREADS="$TEST_THREADS" cargo llvm-cov nextest --workspace --all-features --html $OPEN_FLAG --test-threads="$TEST_THREADS"
 else
-  cargo llvm-cov --workspace --all-features --html $OPEN_FLAG
+  RUST_TEST_THREADS="$TEST_THREADS" cargo llvm-cov --workspace --all-features --html $OPEN_FLAG -- --test-threads="$TEST_THREADS"
 fi
 
 echo "==> Exporting LCOV (from existing coverage data)"
