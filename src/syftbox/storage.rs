@@ -176,6 +176,10 @@ impl SyftBoxStorage {
         hint: Option<String>,
         overwrite: bool,
     ) -> Result<()> {
+        if recipients.is_empty() {
+            bail!("at least one recipient is required for encryption");
+        }
+
         match &self.backend {
             StorageBackend::SyctCrypto(backend) => {
                 // Get relative path from datasite root
@@ -191,42 +195,14 @@ impl SyftBoxStorage {
                 fs::write(&shadow_path, data).with_context(|| {
                     format!("failed to write plaintext to shadow {:?}", shadow_path)
                 })?;
-
-                // Encrypt from shadow to datasites using syc file encrypt pattern
-                use syft_crypto_protocol::datasite::crypto::{
-                    encrypt_envelope_for_recipient, load_private_keys_for_identity,
-                    resolve_recipient_bundle,
-                };
-
-                if recipients.len() != 1 {
-                    bail!("exactly one recipient is supported for encryption");
-                }
-
-                let sender_identity = syc::resolve_identity(None, &backend.context.vault_path)?;
-                let recipient_identity = recipients[0].clone();
-                let sender_keys =
-                    load_private_keys_for_identity(&backend.context, &sender_identity)?;
-                let recipient_bundle = resolve_recipient_bundle(
-                    &backend.context,
-                    &sender_keys,
-                    &sender_identity,
-                    &recipient_identity,
+                // Encrypt from shadow to datasites through the unified write path,
+                // which supports multi-recipient envelopes.
+                self.write_with_policy(
+                    datasite_path,
+                    data,
+                    WritePolicy::Envelope { recipients, hint },
+                    overwrite,
                 )?;
-
-                let plaintext = fs::read(&shadow_path)?;
-                let envelope = encrypt_envelope_for_recipient(
-                    &sender_identity,
-                    &sender_keys,
-                    &recipient_identity,
-                    &recipient_bundle,
-                    &plaintext,
-                    hint.as_deref(),
-                )?;
-
-                // Write encrypted to datasites
-                use syft_crypto_protocol::datasite::context::atomic_write;
-                atomic_write(datasite_path, &envelope)?;
-
                 Ok(())
             }
             StorageBackend::PlainFs => {
