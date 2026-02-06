@@ -8,11 +8,17 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
+use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use syftbox_sdk::syftbox::config::SyftboxRuntimeConfig;
 use syftbox_sdk::syftbox::control::{is_syftbox_running, start_syftbox, stop_syftbox};
+
+fn embedded_test_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
 
 fn pick_free_port() -> u16 {
     std::net::TcpListener::bind("127.0.0.1:0")
@@ -104,6 +110,7 @@ fn wait_until(mut check: impl FnMut() -> bool, timeout: Duration) -> bool {
 
 #[test]
 fn embedded_backend_starts_and_stops() {
+    let _guard = embedded_test_lock().lock().unwrap();
     let server = FakeHttpServer::start();
     let tmp = tempfile::tempdir().unwrap();
     let data_dir = tmp.path().join("data");
@@ -160,6 +167,7 @@ fn embedded_backend_starts_and_stops() {
 // which Windows CI doesn't enforce reliably
 #[cfg(not(windows))]
 fn embedded_backend_works_with_localhost_client_url() {
+    let _guard = embedded_test_lock().lock().unwrap();
     let server = FakeHttpServer::start();
     let tmp = tempfile::tempdir().unwrap();
     let data_dir = tmp.path().join("data");
@@ -219,6 +227,7 @@ fn embedded_backend_works_with_localhost_client_url() {
 // which Windows CI doesn't enforce reliably
 #[cfg(not(windows))]
 fn embedded_backend_falls_back_to_random_port_when_configured_port_busy() {
+    let _guard = embedded_test_lock().lock().unwrap();
     let server = FakeHttpServer::start();
     let tmp = tempfile::tempdir().unwrap();
     let data_dir = tmp.path().join("data");
