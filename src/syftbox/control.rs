@@ -1206,6 +1206,16 @@ fn start_embedded(config: &SyftboxRuntimeConfig) -> Result<()> {
         } else {
             log_warn("Embedded daemon state exists but control plane not responsive, cleaning up stale state");
             if let Some(state) = guard.take() {
+                // Ensure we actually stop the stale daemon thread before releasing its lock.
+                // Dropping state without stopping leaks a live control plane and causes
+                // follow-up stop checks to fail (observed in parallel CI tests).
+                match state.handle.stop() {
+                    Ok(()) => log_info("Stopped stale embedded daemon thread"),
+                    Err(e) => log_warn(&format!(
+                        "Error stopping stale embedded daemon thread: {}",
+                        e
+                    )),
+                }
                 release_embedded_lock(state.workspace_lock);
             }
         }
