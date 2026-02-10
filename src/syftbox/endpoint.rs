@@ -2,6 +2,7 @@ use crate::syftbox::app::SyftBoxApp;
 use crate::syftbox::storage::WritePolicy;
 use crate::syftbox::types::{RpcRequest, RpcResponse};
 use anyhow::{anyhow, bail, Context, Result};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use tracing::instrument;
 
@@ -202,6 +203,27 @@ impl Endpoint {
     /// You write requests to datasites/their-email/, they write responses back there
     #[instrument(skip(self), fields(component = "rpc", endpoint = %self.name), err)]
     pub fn check_responses(&self) -> Result<Vec<(PathBuf, RpcResponse)>> {
+        self.check_responses_internal(None)
+    }
+
+    /// Check for responses only for a known set of request IDs.
+    /// This avoids attempting to parse/decrypt unrelated response files that this
+    /// instance is not waiting for.
+    #[instrument(skip(self, request_ids), fields(component = "rpc", endpoint = %self.name), err)]
+    pub fn check_responses_for_ids(
+        &self,
+        request_ids: &HashSet<String>,
+    ) -> Result<Vec<(PathBuf, RpcResponse)>> {
+        if request_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.check_responses_internal(Some(request_ids))
+    }
+
+    fn check_responses_internal(
+        &self,
+        request_ids: Option<&HashSet<String>>,
+    ) -> Result<Vec<(PathBuf, RpcResponse)>> {
         let mut responses = Vec::new();
 
         // Get the datasites root directory
@@ -267,7 +289,7 @@ impl Endpoint {
             // Check the endpoint folder for this identity
             let endpoint_folder = identity_path.join(endpoint_suffix);
             if endpoint_folder.exists() {
-                responses.extend(self.check_responses_in_folder(&endpoint_folder)?);
+                responses.extend(self.check_responses_in_folder(&endpoint_folder, request_ids)?);
             }
         }
 
@@ -275,7 +297,11 @@ impl Endpoint {
     }
 
     /// Helper to check for responses in a specific folder
-    fn check_responses_in_folder(&self, folder: &Path) -> Result<Vec<(PathBuf, RpcResponse)>> {
+    fn check_responses_in_folder(
+        &self,
+        folder: &Path,
+        request_ids: Option<&HashSet<String>>,
+    ) -> Result<Vec<(PathBuf, RpcResponse)>> {
         let mut responses = Vec::new();
 
         // Return empty if folder doesn't exist
@@ -289,6 +315,14 @@ impl Endpoint {
 
             // Check if it's a .response file
             if path.extension().and_then(|s| s.to_str()) == Some("response") {
+                if let Some(ids) = request_ids {
+                    let Some(file_stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                        continue;
+                    };
+                    if !ids.contains(file_stem) {
+                        continue;
+                    }
+                }
                 match self.read_response(&path) {
                     Ok(response) => {
                         responses.push((path, response));
@@ -475,6 +509,50 @@ mod tests {
         std::fs::create_dir_all(&clash_dir)?;
         let create_err = endpoint.create_request(&clash);
         assert!(create_err.is_err());
+
+        Ok(())
+    }
+
+    #[test]
+    fn check_responses_for_ids_ignores_unrelated_response_files() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let app = SyftBoxApp::new(temp_dir.path(), "alice@example.com", "test_app")?;
+        let endpoint = Endpoint::new(&app, "/message")?;
+
+        let wanted_req = RpcRequest::new(
+            "sender@example.com".to_string(),
+            app.build_syft_url("/message"),
+            "POST".to_string(),
+            b"Hello".to_vec(),
+        );
+
+        // Valid response for a request we care about.
+        let wanted_resp_path = endpoint.path.join(format!("{}.response", wanted_req.id));
+        std::fs::write(
+            &wanted_resp_path,
+            serde_json::json!({
+                "id": wanted_req.id,
+                "sender": "r@example.com",
+                "url": wanted_req.url,
+                "headers": {},
+                "created": chrono::Utc::now().to_rfc3339(),
+                "expires": chrono::Utc::now().to_rfc3339(),
+                "status_code": 200,
+                "body": base64::engine::general_purpose::STANDARD.encode(b"{}"),
+            })
+            .to_string(),
+        )?;
+
+        // Unrelated response file with invalid payload should be ignored by ID filter.
+        let unrelated_id = "unrelated-request-id";
+        let unrelated_path = endpoint.path.join(format!("{}.response", unrelated_id));
+        std::fs::write(&unrelated_path, "SYC1-not-json")?;
+
+        let mut only_wanted = HashSet::new();
+        only_wanted.insert(wanted_req.id.clone());
+        let responses = endpoint.check_responses_for_ids(&only_wanted)?;
+        assert_eq!(responses.len(), 1);
+        assert_eq!(responses[0].1.id, wanted_req.id);
 
         Ok(())
     }
