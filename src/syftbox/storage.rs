@@ -40,14 +40,14 @@ pub struct SyftStorageConfig {
     pub debug: bool,
 }
 
-fn syc_paths_match(left: &Path, right: &Path) -> bool {
+fn sbc_paths_match(left: &Path, right: &Path) -> bool {
     match (left.canonicalize(), right.canonicalize()) {
         (Ok(a), Ok(b)) => a == b,
         _ => left == right,
     }
 }
 
-fn looks_like_syc_envelope(bytes: &[u8]) -> bool {
+fn looks_like_sbc_envelope(bytes: &[u8]) -> bool {
     syft_crypto_protocol::envelope::has_sbc_magic(bytes)
 }
 
@@ -68,12 +68,12 @@ pub enum WritePolicy {
 
 #[derive(Debug, Clone)]
 enum StorageBackend {
-    SyctCrypto(SyctCryptoBackend),
+    SbctCrypto(SbctCryptoBackend),
     PlainFs,
 }
 
 #[derive(Debug, Clone)]
-struct SyctCryptoBackend {
+struct SbctCryptoBackend {
     context: AppContext,
 }
 
@@ -85,7 +85,7 @@ impl SyftBoxStorage {
     pub fn with_config(root: &Path, config: &SyftStorageConfig) -> Self {
         let disable_crypto = config.disable_crypto
             || cfg!(feature = "test-plaintext")
-            || env::var("SYFTBOX_DISABLE_SYC")
+            || env::var("SYFTBOX_DISABLE_SBC")
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                 .unwrap_or(false)
             || cfg!(test);
@@ -99,11 +99,11 @@ impl SyftBoxStorage {
         let backend = if disable_crypto {
             StorageBackend::PlainFs
         } else {
-            SyctCryptoBackend::new(&encrypted_root, config.vault_path.as_deref())
-                .map(StorageBackend::SyctCrypto)
+            SbctCryptoBackend::new(&encrypted_root, config.vault_path.as_deref())
+                .map(StorageBackend::SbctCrypto)
                 .unwrap_or_else(|err| {
                     warn!(
-                        "syc backend unavailable ({}); falling back to plaintext filesystem access",
+                        "sbc backend unavailable ({}); falling back to plaintext filesystem access",
                         err
                     );
                     StorageBackend::PlainFs
@@ -112,9 +112,9 @@ impl SyftBoxStorage {
 
         if debug {
             match &backend {
-                StorageBackend::SyctCrypto(b) => {
+                StorageBackend::SbctCrypto(b) => {
                     eprintln!(
-                        "[syc][debug] SyftBoxStorage initialized: root={} crypto=true vault_path={} data_root={} shadow_root={}",
+                        "[sbc][debug] SyftBoxStorage initialized: root={} crypto=true vault_path={} data_root={} shadow_root={}",
                         encrypted_root.display(),
                         b.context.vault_path.display(),
                         b.context.data_root.display(),
@@ -123,7 +123,7 @@ impl SyftBoxStorage {
                 }
                 StorageBackend::PlainFs => {
                     eprintln!(
-                        "[syc][debug] SyftBoxStorage initialized: root={} crypto=false",
+                        "[sbc][debug] SyftBoxStorage initialized: root={} crypto=false",
                         encrypted_root.display()
                     );
                 }
@@ -138,7 +138,7 @@ impl SyftBoxStorage {
     }
 
     pub fn uses_crypto(&self) -> bool {
-        matches!(self.backend, StorageBackend::SyctCrypto(_))
+        matches!(self.backend, StorageBackend::SbctCrypto(_))
     }
 
     pub fn write_plaintext_file(
@@ -185,7 +185,7 @@ impl SyftBoxStorage {
         }
 
         match &self.backend {
-            StorageBackend::SyctCrypto(backend) => {
+            StorageBackend::SbctCrypto(backend) => {
                 // Get relative path from datasite root
                 let relative = self.relative_from_root(datasite_path)?;
 
@@ -226,7 +226,7 @@ impl SyftBoxStorage {
     #[instrument(skip(self), fields(component = "storage"), err)]
     pub fn read_with_shadow(&self, datasite_path: &Path) -> Result<Vec<u8>> {
         match &self.backend {
-            StorageBackend::SyctCrypto(backend) => {
+            StorageBackend::SbctCrypto(backend) => {
                 // Get relative path from datasite root
                 let relative = self.relative_from_root(datasite_path)?;
                 use syft_crypto_protocol::datasite::context::resolve_shadow_path;
@@ -250,7 +250,7 @@ impl SyftBoxStorage {
                     }
                 }
 
-                // Decrypt from datasites to shadow using syc file decrypt pattern
+                // Decrypt from datasites to shadow using sbc file decrypt pattern
                 use crate::syftbox::sbc::resolve_sender_bundle;
                 use syft_crypto_protocol::datasite::crypto::{
                     decrypt_envelope_for_recipient, load_private_keys_for_identity,
@@ -264,7 +264,7 @@ impl SyftBoxStorage {
                 if self.debug {
                     if let Some(env) = &envelope {
                         eprintln!(
-                            "[syc][debug] read_with_shadow: encrypted sender={} sender_fp={} recipients={} path={}",
+                            "[sbc][debug] read_with_shadow: encrypted sender={} sender_fp={} recipients={} path={}",
                             env.prelude.sender.identity,
                             env.prelude.sender.ik_fingerprint,
                             env.prelude.recipients.len(),
@@ -272,7 +272,7 @@ impl SyftBoxStorage {
                         );
                     } else {
                         eprintln!(
-                            "[syc][debug] read_with_shadow: plaintext path={}",
+                            "[sbc][debug] read_with_shadow: plaintext path={}",
                             datasite_path.display()
                         );
                     }
@@ -298,7 +298,7 @@ impl SyftBoxStorage {
                     };
                     if self.debug {
                         eprintln!(
-                            "[syc][debug] read_with_shadow: decrypt as identity={} sender_bundle_fp={}",
+                            "[sbc][debug] read_with_shadow: decrypt as identity={} sender_bundle_fp={}",
                             identity,
                             sender_bundle.identity_fingerprint()
                         );
@@ -338,7 +338,7 @@ impl SyftBoxStorage {
                             eprintln!("✓ Cached PLAINTEXT to shadow: {:?}", shadow_path);
                         }
                         // Sanity check: ensure we didn't cache encrypted data
-                        if looks_like_syc_envelope(&plaintext) {
+                        if looks_like_sbc_envelope(&plaintext) {
                             panic!(
                                 "BUG: Cached encrypted data to shadow folder! Path: {:?}",
                                 shadow_path
@@ -366,13 +366,13 @@ impl SyftBoxStorage {
     #[instrument(skip(self), fields(component = "storage"), err)]
     pub fn read_with_shadow_metadata(&self, datasite_path: &Path) -> Result<ReadWithShadowResult> {
         match &self.backend {
-            StorageBackend::SyctCrypto(backend) => {
+            StorageBackend::SbctCrypto(backend) => {
                 // Get relative path from datasite root
                 let relative = self.relative_from_root(datasite_path)?;
                 use syft_crypto_protocol::datasite::context::resolve_shadow_path;
                 let shadow_path = resolve_shadow_path(&backend.context, &relative);
 
-                // Decrypt from datasites to shadow using syc file decrypt pattern
+                // Decrypt from datasites to shadow using sbc file decrypt pattern
                 use crate::syftbox::sbc::resolve_sender_bundle;
                 use syft_crypto_protocol::datasite::crypto::{
                     decrypt_envelope_for_recipient, load_private_keys_for_identity,
@@ -385,7 +385,7 @@ impl SyftBoxStorage {
                 if let Some(envelope) = envelope {
                     if self.debug {
                         eprintln!(
-                            "[syc][debug] read_with_shadow_metadata: encrypted sender={} sender_fp={} recipients={} path={}",
+                            "[sbc][debug] read_with_shadow_metadata: encrypted sender={} sender_fp={} recipients={} path={}",
                             envelope.prelude.sender.identity,
                             envelope.prelude.sender.ik_fingerprint,
                             envelope.prelude.recipients.len(),
@@ -415,7 +415,7 @@ impl SyftBoxStorage {
                     };
                     if self.debug {
                         eprintln!(
-                            "[syc][debug] read_with_shadow_metadata: decrypt as identity={} sender_bundle_fp={}",
+                            "[sbc][debug] read_with_shadow_metadata: decrypt as identity={} sender_bundle_fp={}",
                             identity,
                             sender_bundle.identity_fingerprint()
                         );
@@ -498,14 +498,14 @@ impl SyftBoxStorage {
             match &policy {
                 WritePolicy::Plaintext => {
                     eprintln!(
-                        "[syc][debug] write_with_shadow: plaintext size={} path={}",
+                        "[sbc][debug] write_with_shadow: plaintext size={} path={}",
                         plaintext.len(),
                         absolute_path.display()
                     );
                 }
                 WritePolicy::Envelope { recipients, hint } => {
                     eprintln!(
-                        "[syc][debug] write_with_shadow: envelope size={} recipients={} hint={:?} path={}",
+                        "[sbc][debug] write_with_shadow: envelope size={} recipients={} hint={:?} path={}",
                         plaintext.len(),
                         recipients.len(),
                         hint,
@@ -521,7 +521,7 @@ impl SyftBoxStorage {
         let outcome = self.write_with_policy(absolute_path, plaintext, policy, overwrite)?;
 
         // If crypto is enabled and we wrote an encrypted file, also cache the plaintext to shadow
-        if let StorageBackend::SyctCrypto(ref backend) = self.backend {
+        if let StorageBackend::SbctCrypto(ref backend) = self.backend {
             if needs_shadow {
                 // Calculate shadow path
                 // Normalize paths to handle Windows extended-length path prefix (\\?\)
@@ -562,7 +562,7 @@ impl SyftBoxStorage {
                                 );
                             }
                             // Sanity check: ensure we didn't cache encrypted data
-                            if looks_like_syc_envelope(plaintext) {
+                            if looks_like_sbc_envelope(plaintext) {
                                 panic!("BUG: Tried to cache encrypted data to shadow folder during write! Path: {:?}", shadow_path);
                             }
                         }
@@ -625,7 +625,7 @@ impl SyftBoxStorage {
         }
 
         // If crypto is enabled, also remove the corresponding shadow file/directory
-        if let StorageBackend::SyctCrypto(ref backend) = self.backend {
+        if let StorageBackend::SbctCrypto(ref backend) = self.backend {
             // Calculate shadow path: strip datasites root, add to shadow root
             // Normalize paths to handle Windows extended-length path prefix (\\?\)
             let normalized_path = strip_windows_prefix(absolute_path);
@@ -760,12 +760,12 @@ impl SyftBoxStorage {
             hint,
         };
         match &self.backend {
-            StorageBackend::SyctCrypto(backend) => {
+            StorageBackend::SbctCrypto(backend) => {
                 if opts.sender.is_none() && !opts.plaintext && !opts.recipients.is_empty() {
                     opts.sender = Some(sbc::resolve_identity(None, &backend.context.vault_path)?);
                 }
                 write_bytes(&backend.context, &opts, data)
-                    .map_err(|err| anyhow!("syc write failed: {err}"))
+                    .map_err(|err| anyhow!("sbc write failed: {err}"))
             }
             StorageBackend::PlainFs => {
                 if absolute_path.exists() && !overwrite {
@@ -791,7 +791,7 @@ impl SyftBoxStorage {
 
     fn read_with_policy(&self, absolute_path: &Path, policy: ReadPolicy) -> Result<Vec<u8>> {
         match &self.backend {
-            StorageBackend::SyctCrypto(backend) => {
+            StorageBackend::SbctCrypto(backend) => {
                 let relative = self.relative_from_root(absolute_path)?;
                 let identity = sbc::resolve_identity(None, &backend.context.vault_path)?;
                 let opts = BytesReadOpts {
@@ -800,7 +800,7 @@ impl SyftBoxStorage {
                     require_envelope: matches!(policy, ReadPolicy::RequireEnvelope),
                 };
                 let result = read_bytes(&backend.context, &opts)
-                    .map_err(|err| anyhow!("syc read failed: {err}"))?;
+                    .map_err(|err| anyhow!("sbc read failed: {err}"))?;
                 Ok(result.plaintext)
             }
             StorageBackend::PlainFs => fs::read(absolute_path)
@@ -905,7 +905,7 @@ fn log_bundle_resolution_error(
         .join("did.json");
 
     eprintln!(
-        "[syc][debug] bundle resolution error: sender={} expected_fp={} vault={} local_bundle={} datasite_bundle={} file={}",
+        "[sbc][debug] bundle resolution error: sender={} expected_fp={} vault={} local_bundle={} datasite_bundle={} file={}",
         sender_identity,
         expected_fp,
         context.vault_path.display(),
@@ -921,7 +921,7 @@ fn log_bundle_resolution_error(
         } => {
             if let Some(info) = datasite_available {
                 eprintln!(
-                    "[syc][debug] bundle not cached: identity={} datasite_fp={} datasite_matches={} datasite_path={}",
+                    "[sbc][debug] bundle not cached: identity={} datasite_fp={} datasite_matches={} datasite_path={}",
                     identity,
                     info.fingerprint,
                     info.matches_expected,
@@ -929,7 +929,7 @@ fn log_bundle_resolution_error(
                 );
             } else {
                 eprintln!(
-                    "[syc][debug] bundle not cached: identity={} datasite_fp=none",
+                    "[sbc][debug] bundle not cached: identity={} datasite_fp=none",
                     identity
                 );
             }
@@ -942,7 +942,7 @@ fn log_bundle_resolution_error(
         } => {
             if let Some(info) = datasite_available {
                 eprintln!(
-                    "[syc][debug] bundle fingerprint mismatch: identity={} expected={} cached={} datasite_fp={} datasite_matches={} datasite_path={}",
+                    "[sbc][debug] bundle fingerprint mismatch: identity={} expected={} cached={} datasite_fp={} datasite_matches={} datasite_path={}",
                     identity,
                     expected,
                     cached,
@@ -952,7 +952,7 @@ fn log_bundle_resolution_error(
                 );
             } else {
                 eprintln!(
-                    "[syc][debug] bundle fingerprint mismatch: identity={} expected={} cached={} datasite_fp=none",
+                    "[sbc][debug] bundle fingerprint mismatch: identity={} expected={} cached={} datasite_fp=none",
                     identity,
                     expected,
                     cached
@@ -961,7 +961,7 @@ fn log_bundle_resolution_error(
         }
         BundleResolutionError::LoadError { identity, source } => {
             eprintln!(
-                "[syc][debug] bundle load error: identity={} source={}",
+                "[sbc][debug] bundle load error: identity={} source={}",
                 identity, source
             );
         }
@@ -979,16 +979,16 @@ fn strip_windows_prefix(path: &Path) -> PathBuf {
     }
 }
 
-impl SyctCryptoBackend {
+impl SbctCryptoBackend {
     fn new(root: &Path, vault_override: Option<&Path>) -> Result<Self> {
-        let vault_env = env::var_os("SYC_VAULT").map(PathBuf::from);
+        let vault_env = env::var_os("SBC_VAULT").map(PathBuf::from);
         let expected_from_data_dir = env::var_os("SYFTBOX_DATA_DIR")
             .map(PathBuf::from)
-            .map(|dir| dir.join(".syc"));
+            .map(|dir| dir.join(".sbc"));
         if let (Some(expected), Some(env_vault)) = (&expected_from_data_dir, &vault_env) {
-            if !syc_paths_match(expected, env_vault) {
+            if !sbc_paths_match(expected, env_vault) {
                 return Err(anyhow!(
-                    "SYC_VAULT must match SYFTBOX_DATA_DIR/.syc (SYC_VAULT={}, expected={})",
+                    "SBC_VAULT must match SYFTBOX_DATA_DIR/.sbc (SBC_VAULT={}, expected={})",
                     env_vault.display(),
                     expected.display()
                 ));
@@ -1000,7 +1000,7 @@ impl SyctCryptoBackend {
             && root.file_name().map(|n| n == ".biovault").unwrap_or(false)
         {
             return Err(anyhow!(
-                "Refusing to default SYC_VAULT under BIOVAULT_HOME; set SYC_VAULT or SYFTBOX_DATA_DIR"
+                "Refusing to default SBC_VAULT under BIOVAULT_HOME; set SBC_VAULT or SYFTBOX_DATA_DIR"
             ));
         }
 
@@ -1009,10 +1009,10 @@ impl SyctCryptoBackend {
             .or(vault_override)
             .map(PathBuf::from)
             .or(expected_from_data_dir)
-            .unwrap_or_else(|| root.join(".syc"));
+            .unwrap_or_else(|| root.join(".sbc"));
         let vault_path = resolve_vault(Some(vault_base));
         ensure_vault_layout(&vault_path)
-            .map_err(|err| anyhow!("failed to prepare syc vault: {err}"))?;
+            .map_err(|err| anyhow!("failed to prepare sbc vault: {err}"))?;
 
         let data_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
         let encrypted_root = sbc::resolve_encrypted_root(&data_root);

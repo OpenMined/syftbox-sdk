@@ -546,7 +546,7 @@ mod tests {
         // Unrelated response file with invalid payload should be ignored by ID filter.
         let unrelated_id = "unrelated-request-id";
         let unrelated_path = endpoint.path.join(format!("{}.response", unrelated_id));
-        std::fs::write(&unrelated_path, "SYC1-not-json")?;
+        std::fs::write(&unrelated_path, "SBC1-not-json")?;
 
         let mut only_wanted = HashSet::new();
         only_wanted.insert(wanted_req.id.clone());

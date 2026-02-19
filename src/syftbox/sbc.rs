@@ -13,7 +13,7 @@ use syft_crypto_protocol::identity::{
 };
 use syft_crypto_protocol::SyftRecoveryKey;
 
-const VAULT_DIR_NAME: &str = ".syc";
+const VAULT_DIR_NAME: &str = ".sbc";
 const CONFIG_DIR: &str = "config";
 const DATASITE_JSON: &str = "datasite.json";
 const PUBLIC_DID_RELATIVE: &str = "public/crypto/did.json";
@@ -87,17 +87,17 @@ pub fn provision_local_identity_with_options(
     vault_override: Option<&Path>,
     overwrite: bool,
 ) -> Result<IdentityProvisioningOutcome> {
-    if syc_debug_enabled() {
+    if sbc_debug_enabled() {
         eprintln!(
-            "[syc][debug] provision_local_identity: identity={} overwrite={} data_root={} vault_override={}",
+            "[sbc][debug] provision_local_identity: identity={} overwrite={} data_root={} vault_override={}",
             identity,
             overwrite,
             data_root.display(),
             vault_override.map(|v| v.display().to_string()).unwrap_or_else(|| "<none>".to_string())
         );
         eprintln!(
-            "[syc][debug] env: SYC_VAULT={:?} SYFTBOX_DATA_DIR={:?} BIOVAULT_HOME={:?}",
-            env::var("SYC_VAULT").ok(),
+            "[sbc][debug] env: SBC_VAULT={:?} SYFTBOX_DATA_DIR={:?} BIOVAULT_HOME={:?}",
+            env::var("SBC_VAULT").ok(),
             env::var("SYFTBOX_DATA_DIR").ok(),
             env::var("BIOVAULT_HOME").ok()
         );
@@ -115,9 +115,9 @@ pub fn provision_local_identity_with_options(
     })?;
 
     let vault_path = resolve_vault_path(vault_override);
-    if syc_debug_enabled() {
+    if sbc_debug_enabled() {
         eprintln!(
-            "[syc][debug] provision_local_identity: encrypted_root={} shadow_root={} vault_path={}",
+            "[sbc][debug] provision_local_identity: encrypted_root={} shadow_root={} vault_path={}",
             encrypted_root.display(),
             shadow_root.display(),
             vault_path.display()
@@ -145,9 +145,9 @@ pub fn provision_local_identity_with_options(
     } else {
         write_identity_material_if_missing(identity, &vault_path, &encrypted_root)?
     };
-    if syc_debug_enabled() {
+    if sbc_debug_enabled() {
         eprintln!(
-            "[syc][debug] provision_local_identity: generated={} bundle_path={} public_bundle_path={}",
+            "[sbc][debug] provision_local_identity: generated={} bundle_path={} public_bundle_path={}",
             outcome.generated,
             outcome.bundle_path.display(),
             outcome.public_bundle_path.display()
@@ -208,9 +208,9 @@ fn write_identity_material_if_missing(
     let key_path = vault_path.join("keys").join(format!("{slug}.key"));
     let bundle_path = vault_path.join("bundles").join(format!("{slug}.json"));
 
-    if syc_debug_enabled() {
+    if sbc_debug_enabled() {
         eprintln!(
-            "[syc][debug] write_identity_material_if_missing: identity={} key_path={} bundle_path={} key_exists={} bundle_exists={}",
+            "[sbc][debug] write_identity_material_if_missing: identity={} key_path={} bundle_path={} key_exists={} bundle_exists={}",
             identity,
             key_path.display(),
             bundle_path.display(),
@@ -237,9 +237,9 @@ fn write_identity_material_if_missing(
         serde_json::from_str(&contents).context("failed to parse existing bundle JSON")?;
 
     let public_bundle_path = export_public_bundle(identity, &public_bundle, encrypted_root)?;
-    if syc_debug_enabled() {
+    if sbc_debug_enabled() {
         eprintln!(
-            "[syc][debug] write_identity_material_if_missing: using existing bundle public_path={}",
+            "[sbc][debug] write_identity_material_if_missing: using existing bundle public_path={}",
             public_bundle_path.display()
         );
     }
@@ -273,9 +273,9 @@ fn write_identity_material(
             identity
         ));
     }
-    if syc_debug_enabled() {
+    if sbc_debug_enabled() {
         eprintln!(
-            "[syc][debug] write_identity_material: identity={} overwrite={} generated={} key_path={} bundle_path={}",
+            "[sbc][debug] write_identity_material: identity={} overwrite={} generated={} key_path={} bundle_path={}",
             identity,
             overwrite,
             generated,
@@ -299,10 +299,10 @@ fn write_identity_material(
 
     let public_bundle_path =
         export_public_bundle(identity, &material.public_bundle, encrypted_root)?;
-    if syc_debug_enabled() {
+    if sbc_debug_enabled() {
         if let Ok(info) = parse_public_bundle_file(&public_bundle_path) {
             eprintln!(
-                "[syc][debug] write_identity_material: public bundle fingerprint={} public_path={}",
+                "[sbc][debug] write_identity_material: public bundle fingerprint={} public_path={}",
                 info.fingerprint,
                 public_bundle_path.display()
             );
@@ -329,9 +329,9 @@ pub fn import_public_bundle(
     ensure_vault_layout(vault_path)
         .map_err(|err| anyhow!("failed to prepare Syft Crypto vault: {err}"))?;
 
-    if syc_debug_enabled() {
+    if sbc_debug_enabled() {
         eprintln!(
-            "[syc][debug] import_public_bundle: bundle_path={} expected_identity={:?} vault_path={} export_root={} refresh_identity={:?}",
+            "[sbc][debug] import_public_bundle: bundle_path={} expected_identity={:?} vault_path={} export_root={} refresh_identity={:?}",
             bundle_path.display(),
             expected_identity,
             vault_path.display(),
@@ -362,9 +362,9 @@ pub fn import_public_bundle(
     fs::create_dir_all(target.parent().unwrap())?;
     fs::write(&target, serde_json::to_vec_pretty(&bundle)?)
         .with_context(|| format!("failed to write bundle to {}", target.display()))?;
-    if syc_debug_enabled() {
+    if sbc_debug_enabled() {
         eprintln!(
-            "[syc][debug] import_public_bundle: identity={} fingerprint={} target={}",
+            "[sbc][debug] import_public_bundle: identity={} fingerprint={} target={}",
             parsed.identity,
             parsed.fingerprint,
             target.display()
@@ -411,9 +411,9 @@ fn export_public_bundle(identity: &str, bundle: &Value, data_root: &Path) -> Res
     }
     fs::write(&public_dir, serde_json::to_vec_pretty(bundle)?)
         .with_context(|| format!("failed to export bundle to {}", public_dir.display()))?;
-    if syc_debug_enabled() {
+    if sbc_debug_enabled() {
         eprintln!(
-            "[syc][debug] export_public_bundle: identity={} public_path={}",
+            "[sbc][debug] export_public_bundle: identity={} public_path={}",
             identity,
             public_dir.display()
         );
@@ -432,7 +432,7 @@ pub fn parse_public_bundle_file(path: &Path) -> Result<PublicBundleInfo> {
     parse_public_bundle_from_str(&body)
 }
 
-/// Validate that a private key file is parseable by the current syc key format.
+/// Validate that a private key file is parseable by the current sbc key format.
 ///
 /// This is used by callers to detect legacy/unreadable key material and trigger
 /// recovery/onboarding flows.
@@ -446,16 +446,16 @@ fn resolve_vault_path(vault_override: Option<&Path>) -> PathBuf {
     if let Some(v) = vault_override {
         return v.to_path_buf();
     }
-    if let Some(env_vault) = std::env::var_os("SYC_VAULT") {
+    if let Some(env_vault) = std::env::var_os("SBC_VAULT") {
         return PathBuf::from(env_vault);
     }
-    // Default to global ~/.syc to avoid accidental churn; callers can override via SYC_VAULT or explicit arg.
+    // Default to global ~/.sbc to avoid accidental churn; callers can override via SBC_VAULT or explicit arg.
     dirs::home_dir()
-        .map(|h| h.join(".syc"))
-        .unwrap_or_else(|| PathBuf::from(".syc"))
+        .map(|h| h.join(".sbc"))
+        .unwrap_or_else(|| PathBuf::from(".sbc"))
 }
 
-fn syc_debug_enabled() -> bool {
+fn sbc_debug_enabled() -> bool {
     env::var_os("BIOVAULT_DEV_SYFTBOX").is_some() || env::var_os("SYFTBOX_DEBUG_CRYPTO").is_some()
 }
 
@@ -491,7 +491,7 @@ pub fn detect_identity(vault: &Path) -> Result<String> {
 
     match identities.len() {
         0 => Err(anyhow!(
-            "no identities found in vault (run `syc key generate` first)"
+            "no identities found in vault (run `sbc key generate` first)"
         )),
         1 => Ok(identities.remove(0).0),
         _ => {
@@ -680,9 +680,9 @@ pub fn resolve_sender_bundle(
     let datasite_info = match load_datasite_bundle(&context.data_root, sender_identity) {
         Ok(Some((info, _body))) => {
             let matches = expected_fp.is_empty() || info.fingerprint == expected_fp;
-            if syc_debug_enabled() && !matches {
+            if sbc_debug_enabled() && !matches {
                 eprintln!(
-                    "[syc][debug] datasite bundle fingerprint mismatch for {}: expected {}, datasite {}",
+                    "[sbc][debug] datasite bundle fingerprint mismatch for {}: expected {}, datasite {}",
                     sender_identity, expected_fp, info.fingerprint
                 );
             }
@@ -695,9 +695,9 @@ pub fn resolve_sender_bundle(
         }
         Ok(None) => None,
         Err(e) => {
-            if syc_debug_enabled() {
+            if sbc_debug_enabled() {
                 eprintln!(
-                    "[syc][debug] failed to load datasite bundle for {}: {}",
+                    "[sbc][debug] failed to load datasite bundle for {}: {}",
                     sender_identity, e
                 );
             }
@@ -736,9 +736,9 @@ pub fn resolve_sender_bundle(
             }
 
             // Fingerprint mismatch - TOFU violation
-            if syc_debug_enabled() {
+            if sbc_debug_enabled() {
                 eprintln!(
-                    "[syc][debug] cached bundle fingerprint mismatch for {}: expected {}, cached {}",
+                    "[sbc][debug] cached bundle fingerprint mismatch for {}: expected {}, cached {}",
                     sender_identity, expected_fp, info.fingerprint
                 );
             }
@@ -781,9 +781,9 @@ pub fn cache_bundle_from_datasite(
     fs::write(&target, body.as_bytes())
         .with_context(|| format!("failed to cache bundle to {}", target.display()))?;
 
-    if syc_debug_enabled() {
+    if sbc_debug_enabled() {
         eprintln!(
-            "[syc][debug] cached bundle for {} from datasite to {}",
+            "[sbc][debug] cached bundle for {} from datasite to {}",
             identity,
             target.display()
         );
