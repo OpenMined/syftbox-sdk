@@ -5,7 +5,7 @@ set -euo pipefail
 # Clones dependencies to PARENT directory as siblings
 #
 # Dependencies:
-#   - syft-crypto-core (required for crypto protocol)
+#   - syftbox-crypto (required for crypto protocol)
 #   - syftbox (optional, for embedded feature)
 #
 # In a repo-managed parent workspace (biovault-desktop), dependencies
@@ -28,17 +28,17 @@ if [[ -d "$PARENT_DIR/.repo" ]]; then
     exit 0
 fi
 
-# Clone syft-crypto-core (required) to parent directory
-if [[ -d "$PARENT_DIR/syft-crypto-core" ]]; then
-    echo "syft-crypto-core already exists at $PARENT_DIR/syft-crypto-core"
-elif [[ -L "$REPO_ROOT/syft-crypto-core" ]]; then
-    echo "Removing stale syft-crypto-core symlink..."
-    rm -f "$REPO_ROOT/syft-crypto-core"
-    echo "Cloning syft-crypto-core to $PARENT_DIR/syft-crypto-core..."
-    git clone --recursive https://github.com/OpenMined/syft-crypto-core.git "$PARENT_DIR/syft-crypto-core"
+# Clone syftbox-crypto (required) to parent directory
+if [[ -d "$PARENT_DIR/syftbox-crypto" ]]; then
+    echo "syftbox-crypto already exists at $PARENT_DIR/syftbox-crypto"
+elif [[ -L "$REPO_ROOT/syftbox-crypto" ]]; then
+    echo "Removing stale syftbox-crypto symlink..."
+    rm -f "$REPO_ROOT/syftbox-crypto"
+    echo "Cloning syftbox-crypto to $PARENT_DIR/syftbox-crypto..."
+    git clone --recursive https://github.com/OpenMined/syftbox-crypto.git "$PARENT_DIR/syftbox-crypto"
 else
-    echo "Cloning syft-crypto-core to $PARENT_DIR/syft-crypto-core..."
-    git clone --recursive https://github.com/OpenMined/syft-crypto-core.git "$PARENT_DIR/syft-crypto-core"
+    echo "Cloning syftbox-crypto to $PARENT_DIR/syftbox-crypto..."
+    git clone --recursive https://github.com/OpenMined/syftbox-crypto.git "$PARENT_DIR/syftbox-crypto"
 fi
 
 # Clone syftbox (for embedded feature) to parent directory
@@ -56,5 +56,5 @@ fi
 
 echo "Workspace setup complete!"
 echo "Dependencies are at:"
-echo "  $PARENT_DIR/syft-crypto-core"
+echo "  $PARENT_DIR/syftbox-crypto"
 echo "  $PARENT_DIR/syftbox"

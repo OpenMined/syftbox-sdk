@@ -122,7 +122,7 @@ jobs:
       matrix:
         include:
           # Linux builds use manylinux Docker with parent directory mounted
-          # for sibling dependencies (../syft-crypto-core, ../syftbox)
+          # for sibling dependencies (../syftbox-crypto, ../syftbox)
           # Must use explicit manylinux version (not auto) to force Docker usage
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
@@ -182,7 +182,7 @@ jobs:
           args: --release --out dist --interpreter ${{ matrix.py-interpreter }}
           sccache: "true"
           manylinux: ${{ matrix.manylinux }}
-          docker-options: -v ${{ github.workspace }}/../syft-crypto-core:${{ github.workspace }}/../syft-crypto-core:ro -v ${{ github.workspace }}/../syftbox:${{ github.workspace }}/../syftbox:ro
+          docker-options: -v ${{ github.workspace }}/../syftbox-crypto:${{ github.workspace }}/../syftbox-crypto:ro -v ${{ github.workspace }}/../syftbox:${{ github.workspace }}/../syftbox:ro
           before-script-linux: |
             # Install protoc in the manylinux container
             PROTOC_VERSION="28.3"

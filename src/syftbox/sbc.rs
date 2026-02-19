@@ -5,7 +5,9 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use syft_crypto_protocol::datasite::context::{ensure_vault_layout, sanitize_identity};
-use syft_crypto_protocol::datasite::crypto::{parse_public_bundle, PublicBundleInfo};
+use syft_crypto_protocol::datasite::crypto::{
+    load_private_keys_from_file, parse_public_bundle, PublicBundleInfo,
+};
 use syft_crypto_protocol::identity::{
     generate_identity_material, identity_material_from_recovery_key,
 };
@@ -310,7 +312,7 @@ fn write_identity_material(
     Ok(IdentityProvisioningOutcome {
         identity: identity.to_string(),
         generated,
-        recovery_mnemonic: Some(material.recovery_key_mnemonic),
+        recovery_mnemonic: Some(material.recovery_key_mnemonic.to_string()),
         vault_path: vault_path.to_path_buf(),
         bundle_path,
         public_bundle_path,
@@ -428,6 +430,16 @@ pub fn parse_public_bundle_file(path: &Path) -> Result<PublicBundleInfo> {
     let body = fs::read_to_string(path)
         .with_context(|| format!("failed to read bundle at {}", path.display()))?;
     parse_public_bundle_from_str(&body)
+}
+
+/// Validate that a private key file is parseable by the current syc key format.
+///
+/// This is used by callers to detect legacy/unreadable key material and trigger
+/// recovery/onboarding flows.
+pub fn validate_private_key_file(path: &Path) -> Result<()> {
+    load_private_keys_from_file(path)
+        .with_context(|| format!("failed to parse private key file: {}", path.display()))?;
+    Ok(())
 }
 
 fn resolve_vault_path(vault_override: Option<&Path>) -> PathBuf {

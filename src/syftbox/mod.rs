@@ -5,8 +5,9 @@ pub mod config;
 pub mod control;
 pub mod endpoint;
 pub mod rpc;
+pub mod sbc;
 pub mod storage;
-pub mod syc;
+pub use sbc as syc;
 pub mod types;
 
 pub use app::SyftBoxApp;
@@ -21,12 +22,12 @@ pub use control::{
 };
 pub use endpoint::Endpoint;
 pub use rpc::{check_requests, send_response};
-pub use storage::{SyftBoxStorage, SyftStorageConfig};
-pub use syc::{
+pub use sbc::{
     cache_bundle_from_datasite, datasite_bundle_path, detect_identity, import_public_bundle,
     load_datasite_bundle, provision_local_identity, provision_local_identity_with_options,
     resolve_identity, resolve_sender_bundle, BundleResolutionError, DatasiteBundleInfo,
 };
+pub use storage::{SyftBoxStorage, SyftStorageConfig};
 pub use types::{RpcHeaders, RpcRequest, RpcResponse};
 
 use anyhow::Result;

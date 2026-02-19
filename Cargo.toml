@@ -32,7 +32,7 @@ chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.10", features = ["v4"] }
 serde_yaml = "0.9"
 
-syft-crypto-protocol = { path = "../syft-crypto-core/protocol", version = "0.1.2-beta.2" }
+syft-crypto-protocol = { package = "syftbox-crypto-protocol", path = "../syftbox-crypto/protocol" }
 syftbox-rs = { path = "../syftbox/rust", package = "syftbox-rs", optional = true }
 
 [dev-dependencies]
