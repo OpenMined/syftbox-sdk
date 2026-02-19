@@ -47,6 +47,10 @@ fn syc_paths_match(left: &Path, right: &Path) -> bool {
     }
 }
 
+fn looks_like_syc_envelope(bytes: &[u8]) -> bool {
+    syft_crypto_protocol::envelope::has_syc_magic(bytes)
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum ReadPolicy {
     AllowPlaintext,
@@ -334,7 +338,7 @@ impl SyftBoxStorage {
                             eprintln!("✓ Cached PLAINTEXT to shadow: {:?}", shadow_path);
                         }
                         // Sanity check: ensure we didn't cache encrypted data
-                        if plaintext.len() >= 4 && &plaintext[0..4] == b"SYC1" {
+                        if looks_like_syc_envelope(&plaintext) {
                             panic!(
                                 "BUG: Cached encrypted data to shadow folder! Path: {:?}",
                                 shadow_path
@@ -558,7 +562,7 @@ impl SyftBoxStorage {
                                 );
                             }
                             // Sanity check: ensure we didn't cache encrypted data
-                            if plaintext.len() >= 4 && &plaintext[0..4] == b"SYC1" {
+                            if looks_like_syc_envelope(plaintext) {
                                 panic!("BUG: Tried to cache encrypted data to shadow folder during write! Path: {:?}", shadow_path);
                             }
                         }
