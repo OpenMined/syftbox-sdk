@@ -4,7 +4,6 @@ pub mod syftbox;
 pub use syft_url::SyftURL;
 
 pub use syft_crypto_protocol::datasite::{context::sanitize_identity, crypto::PublicBundleInfo};
-pub use syft_crypto_protocol::envelope::has_sbc_magic as has_syc_magic;
 pub use syft_crypto_protocol::envelope::{
     has_sbc_magic, parse_envelope, ParsedEnvelope, SenderInfo,
 };

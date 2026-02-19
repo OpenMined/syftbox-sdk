@@ -7,7 +7,6 @@ pub mod endpoint;
 pub mod rpc;
 pub mod sbc;
 pub mod storage;
-pub use sbc as syc;
 pub mod types;
 
 pub use app::SyftBoxApp;
