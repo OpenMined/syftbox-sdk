@@ -221,5 +221,5 @@ Cargo.lock
 .repo-manifest/
 
 # Workspace symlinks (created by repo tool)
-/syft-crypto-core
+/syftbox-crypto
 /syftbox

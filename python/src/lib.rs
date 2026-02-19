@@ -8,8 +8,8 @@ use pyo3::types::{PyBytes, PyModule};
 use ::syftbox_sdk as core;
 use core::{
     default_syftbox_config_path, load_runtime_config,
+    syftbox::sbc::{import_public_bundle, provision_local_identity, IdentityProvisioningOutcome},
     syftbox::storage::{ReadWithShadowResult, SyftStorageConfig, WritePolicy},
-    syftbox::syc::{provision_local_identity, import_public_bundle, IdentityProvisioningOutcome},
     SyftBoxApp, SyftBoxStorage, SyftURL as CoreSyftURL,
     SyftboxRuntimeConfig,
 };

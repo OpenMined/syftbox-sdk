@@ -2,6 +2,6 @@
 <manifest>
   <remote name="github" fetch="git@github.com:" />
   <default remote="github" revision="main" />
-  <project name="OpenMined/syft-crypto-core" path="syft-crypto-core" revision="main" />
+  <project name="OpenMined/syftbox-crypto" path="syftbox-crypto" revision="main" />
   <project name="OpenMined/syftbox" path="syftbox" revision="madhava/biovault" />
 </manifest>

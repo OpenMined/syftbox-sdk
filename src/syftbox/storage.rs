@@ -1,5 +1,5 @@
-use crate::syftbox::syc;
-use crate::syftbox::syc::BundleResolutionError;
+use crate::syftbox::sbc;
+use crate::syftbox::sbc::BundleResolutionError;
 use anyhow::{anyhow, bail, Context, Result};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -48,7 +48,7 @@ fn syc_paths_match(left: &Path, right: &Path) -> bool {
 }
 
 fn looks_like_syc_envelope(bytes: &[u8]) -> bool {
-    syft_crypto_protocol::envelope::has_syc_magic(bytes)
+    syft_crypto_protocol::envelope::has_sbc_magic(bytes)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -94,7 +94,7 @@ impl SyftBoxStorage {
             || env::var_os("SYFTBOX_DEBUG_CRYPTO").is_some();
 
         let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-        let encrypted_root = syc::resolve_encrypted_root(&canonical_root);
+        let encrypted_root = sbc::resolve_encrypted_root(&canonical_root);
 
         let backend = if disable_crypto {
             StorageBackend::PlainFs
@@ -251,7 +251,7 @@ impl SyftBoxStorage {
                 }
 
                 // Decrypt from datasites to shadow using syc file decrypt pattern
-                use crate::syftbox::syc::resolve_sender_bundle;
+                use crate::syftbox::sbc::resolve_sender_bundle;
                 use syft_crypto_protocol::datasite::crypto::{
                     decrypt_envelope_for_recipient, load_private_keys_for_identity,
                     parse_optional_envelope,
@@ -280,7 +280,7 @@ impl SyftBoxStorage {
 
                 let plaintext = if let Some(envelope) = envelope {
                     // File is encrypted, MUST decrypt successfully to cache
-                    let identity = syc::resolve_identity(None, &backend.context.vault_path)?;
+                    let identity = sbc::resolve_identity(None, &backend.context.vault_path)?;
                     let recipient_keys =
                         load_private_keys_for_identity(&backend.context, &identity)?;
                     let sender_bundle = match resolve_sender_bundle(&backend.context, &envelope) {
@@ -373,7 +373,7 @@ impl SyftBoxStorage {
                 let shadow_path = resolve_shadow_path(&backend.context, &relative);
 
                 // Decrypt from datasites to shadow using syc file decrypt pattern
-                use crate::syftbox::syc::resolve_sender_bundle;
+                use crate::syftbox::sbc::resolve_sender_bundle;
                 use syft_crypto_protocol::datasite::crypto::{
                     decrypt_envelope_for_recipient, load_private_keys_for_identity,
                     parse_optional_envelope,
@@ -397,7 +397,7 @@ impl SyftBoxStorage {
                     let sender_fingerprint = envelope.prelude.sender.ik_fingerprint.clone();
 
                     // File is encrypted, decrypt it
-                    let identity = syc::resolve_identity(None, &backend.context.vault_path)?;
+                    let identity = sbc::resolve_identity(None, &backend.context.vault_path)?;
                     let recipient_keys =
                         load_private_keys_for_identity(&backend.context, &identity)?;
                     let sender_bundle = match resolve_sender_bundle(&backend.context, &envelope) {
@@ -762,7 +762,7 @@ impl SyftBoxStorage {
         match &self.backend {
             StorageBackend::SyctCrypto(backend) => {
                 if opts.sender.is_none() && !opts.plaintext && !opts.recipients.is_empty() {
-                    opts.sender = Some(syc::resolve_identity(None, &backend.context.vault_path)?);
+                    opts.sender = Some(sbc::resolve_identity(None, &backend.context.vault_path)?);
                 }
                 write_bytes(&backend.context, &opts, data)
                     .map_err(|err| anyhow!("syc write failed: {err}"))
@@ -793,7 +793,7 @@ impl SyftBoxStorage {
         match &self.backend {
             StorageBackend::SyctCrypto(backend) => {
                 let relative = self.relative_from_root(absolute_path)?;
-                let identity = syc::resolve_identity(None, &backend.context.vault_path)?;
+                let identity = sbc::resolve_identity(None, &backend.context.vault_path)?;
                 let opts = BytesReadOpts {
                     relative,
                     identity: Some(identity),
@@ -1015,8 +1015,8 @@ impl SyctCryptoBackend {
             .map_err(|err| anyhow!("failed to prepare syc vault: {err}"))?;
 
         let data_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-        let encrypted_root = syc::resolve_encrypted_root(&data_root);
-        let shadow_root = syc::shadow_root_for_data_root(&encrypted_root);
+        let encrypted_root = sbc::resolve_encrypted_root(&data_root);
+        let shadow_root = sbc::shadow_root_for_data_root(&encrypted_root);
         fs::create_dir_all(&shadow_root)
             .with_context(|| format!("failed to prepare shadow root {:?}", shadow_root))?;
 
